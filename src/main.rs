@@ -1,7 +1,6 @@
 //! An Asteroids-ish example game to show off ggez.
 //! The idea is that this game is simple but still
 //! non-trivial enough to be interesting.
-
 extern crate ggez;
 
 extern crate rand;
@@ -54,6 +53,8 @@ enum ActorType {
     Shot,
 }
 
+
+
 #[derive(Debug)]
 struct Actor {
     tag: ActorType,
@@ -70,6 +71,27 @@ struct Actor {
     life: f32,
 }
 
+trait Colliding {
+    fn on_collision(&self, other: &Colliding, speed: f32);
+}
+/*
+#[derive(Debug)]
+struct Transform {
+    position: Point2,
+    angle: f32,
+    scale: f32, // only uniform scaling for now
+}
+
+#[derive(Debug)]
+struct GameObject {
+    transform: Transform,
+    image: graphics::Image,
+    
+}
+*/
+
+
+
 const PLAYER_LIFE: f32 = 1.0;
 const SHOT_LIFE: f32 = 2.0;
 const ROCK_LIFE: f32 = 1.0;
@@ -78,7 +100,7 @@ const PLAYER_BBOX: f32 = 12.0;
 const ROCK_BBOX: f32 = 12.0;
 const SHOT_BBOX: f32 = 6.0;
 
-const MAX_ROCK_VEL: f32 = 50.0;
+const MAX_ROCK_VEL: f32 = 250.0;
 
 /// *********************************************************************
 /// Now we have some constructor functions for different game objects.
@@ -149,31 +171,37 @@ fn create_rocks(num: i32, exclusion: Point2, min_radius: f32, max_radius: f32) -
 /// the coordinate system so that +y is up and -y is down.
 /// **********************************************************************
 
-const SHOT_SPEED: f32 = 200.0;
+const SHOT_SPEED: f32 = 1100.0;
 const SHOT_ANG_VEL: f32 = 0.1;
 
-// Acceleration in pixels per second.
-const PLAYER_THRUST: f32 = 100.0;
-// Rotation in radians per second.
-const PLAYER_TURN_RATE: f32 = 3.0;
+const PLAYER_SPEED: f32 = 500.0;
+
 // Seconds between shots
-const PLAYER_SHOT_TIME: f32 = 0.5;
+const PLAYER_SHOT_TIME: f32 = 0.2;
+
+fn bool_to_f(v: bool) -> f32 {
+    if v {
+        return 1.0;
+    }
+    return 0.0;
+}
 
 fn player_handle_input(actor: &mut Actor, input: &InputState, dt: f32) {
-    actor.facing += dt * PLAYER_TURN_RATE * input.xaxis;
+    //actor.facing += dt * PLAYER_TURN_RATE * input.xaxis;
+    println!("{:?}", input);
 
-    if input.yaxis > 0.0 {
-        player_thrust(actor, dt);
-    }
+    let point = Point2::new(
+        bool_to_f(input.right) * 1.0
+      + bool_to_f(input.left) * -1.0
+      , 
+        bool_to_f(input.up) * 1.0
+      + bool_to_f(input.down) * -1.0
+    );
+
+    actor.pos.coords += point.coords * dt * PLAYER_SPEED;
 }
 
-fn player_thrust(actor: &mut Actor, dt: f32) {
-    let direction_vector = vec_from_angle(actor.facing);
-    let thrust_vector = direction_vector * (PLAYER_THRUST);
-    actor.velocity += thrust_vector * (dt);
-}
-
-const MAX_PHYSICS_VEL: f32 = 250.0;
+const MAX_PHYSICS_VEL: f32 = 950.0;
 
 fn update_actor_position(actor: &mut Actor, dt: f32) {
     // Clamp the velocity to the max efficiently
@@ -275,6 +303,10 @@ struct InputState {
     xaxis: f32,
     yaxis: f32,
     fire: bool,
+    up: bool,
+    down: bool,
+    right: bool,
+    left: bool
 }
 
 impl Default for InputState {
@@ -283,6 +315,10 @@ impl Default for InputState {
             xaxis: 0.0,
             yaxis: 0.0,
             fire: false,
+            up: false,
+            down: false,
+            right: false,
+            left: false
         }
     }
 }
@@ -302,7 +338,7 @@ struct MainState {
     player: Actor,
     shots: Vec<Actor>,
     rocks: Vec<Actor>,
-    level: i32,
+    respawn_time: f32,
     score: i32,
     assets: Assets,
     screen_width: u32,
@@ -328,13 +364,13 @@ impl MainState {
         let level_disp = graphics::Text::new(ctx, "level", &assets.font)?;
 
         let player = create_player();
-        let rocks = create_rocks(5, player.pos, 100.0, 250.0);
+        let rocks = create_rocks(5, player.pos, 400.0, 1500.0);
 
         let s = MainState {
             player,
             shots: Vec::new(),
             rocks,
-            level: 0,
+            respawn_time: 5.0,
             score: 0,
             assets,
             screen_width: ctx.conf.window_mode.width,
@@ -373,7 +409,8 @@ impl MainState {
         for rock in &mut self.rocks {
             let pdistance = rock.pos - self.player.pos;
             if pdistance.norm() < (self.player.bbox_size + rock.bbox_size) {
-                self.player.life = 0.0;
+                    self.score = 0;
+                    self.gui_dirty = true;
             }
             for shot in &mut self.shots {
                 let distance = shot.pos - rock.pos;
@@ -389,22 +426,19 @@ impl MainState {
     }
 
     fn check_for_level_respawn(&mut self) {
-        if self.rocks.is_empty() {
-            self.level += 1;
+        if self.respawn_time <= 0.0 {
+            self.respawn_time = self.rocks.len() as f32 / 10.0;
             self.gui_dirty = true;
-            let r = create_rocks(self.level + 5, self.player.pos, 100.0, 250.0);
+            let r =  create_rocks(1, self.player.pos, 400.0, 1500.0);
             self.rocks.extend(r);
         }
     }
 
     fn update_ui(&mut self, ctx: &mut Context) {
         let score_str = format!("Score: {}", self.score);
-        let level_str = format!("Level: {}", self.level);
         let score_text = graphics::Text::new(ctx, &score_str, &self.assets.font).unwrap();
-        let level_text = graphics::Text::new(ctx, &level_str, &self.assets.font).unwrap();
 
         self.score_display = score_text;
-        self.level_display = level_text;
     }
 }
 
@@ -414,10 +448,7 @@ impl MainState {
 
 fn print_instructions() {
     println!();
-    println!("Welcome to ASTROBLASTO!");
-    println!();
-    println!("How to play:");
-    println!("L/R arrow keys rotate your ship, up thrusts, space bar fires");
+    println!("Welcome to Rust-Blaster");
     println!();
 }
 
@@ -450,6 +481,8 @@ impl EventHandler for MainState {
 
         while timer::check_update_time(ctx, DESIRED_FPS) {
             let seconds = 1.0 / (DESIRED_FPS as f32);
+            
+            self.respawn_time -= seconds;
 
             // Update the player state based on the user input.
             player_handle_input(&mut self.player, &self.input, seconds);
@@ -555,13 +588,16 @@ impl EventHandler for MainState {
     fn key_down_event(&mut self, ctx: &mut Context, keycode: Keycode, _keymod: Mod, _repeat: bool) {
         match keycode {
             Keycode::Up => {
-                self.input.yaxis = 1.0;
+                self.input.up = true;
+            }
+            Keycode::Down => {
+                self.input.down = true;
             }
             Keycode::Left => {
-                self.input.xaxis = -1.0;
+                self.input.left = true;
             }
             Keycode::Right => {
-                self.input.xaxis = 1.0;
+                self.input.right = true;
             }
             Keycode::Space => {
                 self.input.fire = true;
@@ -579,10 +615,16 @@ impl EventHandler for MainState {
     fn key_up_event(&mut self, _ctx: &mut Context, keycode: Keycode, _keymod: Mod, _repeat: bool) {
         match keycode {
             Keycode::Up => {
-                self.input.yaxis = 0.0;
+                self.input.up = false;
             }
-            Keycode::Left | Keycode::Right => {
-                self.input.xaxis = 0.0;
+            Keycode::Down => {
+                self.input.down = false;
+            }
+            Keycode::Left => {
+                self.input.left = false;
+            }
+            Keycode::Right => {
+                self.input.right = false;
             }
             Keycode::Space => {
                 self.input.fire = false;
@@ -598,8 +640,8 @@ impl EventHandler for MainState {
 /// **********************************************************************
 
 pub fn main() {
-    let mut cb = ContextBuilder::new("space-blaster", "katagis")
-        .window_setup(conf::WindowSetup::default().title("Space Blaster!"))
+    let mut cb = ContextBuilder::new("rust-blaster", "katagis")
+        .window_setup(conf::WindowSetup::default().title("Rust Blaster!"))
         .window_mode(conf::WindowMode::default().dimensions(1920, 1080));
 
     cb = cb.add_resource_path(path::PathBuf::from("resources"));
