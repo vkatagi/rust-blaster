@@ -1432,6 +1432,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rust-blaster"
+version = "0.1.0"
+dependencies = [
+ "ggez 0.4.4",
+ "rand 0.6.5 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
 name = "rustc-demangle"
 version = "0.1.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1624,14 +1632,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 dependencies = [
  "quote 0.3.15 (registry+https://github.com/rust-lang/crates.io-index)",
  "syn 0.11.11 (registry+https://github.com/rust-lang/crates.io-index)",
-]
-
-[[package]]
-name = "space-blaster"
-version = "0.1.0"
-dependencies = [
- "ggez 0.4.4",
- "rand 0.6.5 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
