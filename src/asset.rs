@@ -58,23 +58,24 @@ impl<T> AssetLibrary<T> where T: LoadableAsset {
 
 #[derive(Debug)]
 pub struct Assets {
-    pub images: AssetLibrary<ImageAsset>,
-    pub fonts: AssetLibrary<FontAsset>,
-    pub sounds: AssetLibrary<SoundAsset>,
+    images: AssetLibrary<ImageAsset>,
+    fonts: AssetLibrary<FontAsset>,
+    sounds: AssetLibrary<SoundAsset>,
 }
 
 impl Assets {
     
-    const fn new(ctx: &mut ggez::Context, files: Vec<&'static str>) -> Self {
-        let images = AssetLibrary::new();
-        let fonts = AssetLibrary::new();
-        let sounds = AssetLibrary::new();
+    pub fn new(ctx: &mut ggez::Context, files: Vec<&'static str>) -> Self {
+        let mut images = AssetLibrary::new();
+        let mut fonts = AssetLibrary::new();
+        let mut sounds = AssetLibrary::new();
         
         for f in files {
             match &f[f.len()-3..] {
                 "png" | "jpg" => images.load(ctx, f).unwrap(),
                 "ogg" => sounds.load(ctx, f).unwrap(),
                 "ttf" => fonts.load(ctx, f).unwrap(),
+                &_ => {}
             }
         }
         
@@ -88,15 +89,15 @@ impl Assets {
     // I would prefer get<ImageAsset>("myasset.png");
     // but I could not even find if its possible to do this currently in rust.
 
-    fn get_image<S>(&self, name: S) -> Option<&ImageAsset> where S: Into<String> {
-        self.images.get(name)
+    pub fn get_image<S>(&self, name: S) -> &ImageAsset where S: Into<String> {
+        self.images.get(name).unwrap_or_else()
     }
 
-    fn get_font<S>(&self, name: S) -> Option<&FontAsset> where S: Into<String> {
+    pub fn get_font<S>(&self, name: S) -> Option<&FontAsset> where S: Into<String> {
         self.fonts.get(name)
     }
 
-    fn get_sound<S>(&self, name: S) -> Option<&SoundAsset> where S: Into<String> {
+    pub fn get_sound<S>(&self, name: S) -> Option<&SoundAsset> where S: Into<String> {
         self.sounds.get(name)
     }
 }

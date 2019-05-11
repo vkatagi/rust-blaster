@@ -17,6 +17,9 @@ use ggez::{Context, ContextBuilder, GameResult};
 use std::env;
 use std::path;
 
+mod asset;
+use asset::Assets;
+
 /// *********************************************************************
 /// Basic stuff, make some helpers for vector functions.
 /// ggez includes the nalgebra math library to provide lots of
@@ -64,6 +67,7 @@ struct Actor {
     ang_vel: f32,
     bbox_size: f32,
 
+    image: String,
     // I am going to lazily overload "life" with a
     // double meaning:
     // for shots, it is the time left to live,
@@ -74,7 +78,7 @@ struct Actor {
 trait Colliding {
     fn on_collision(&self, other: &Colliding, speed: f32);
 }
-/*
+
 #[derive(Debug)]
 struct Transform {
     position: Point2,
@@ -88,7 +92,7 @@ struct GameObject {
     image: graphics::Image,
     
 }
-*/
+
 
 
 
@@ -113,6 +117,7 @@ fn create_player() -> Actor {
         facing: 0.,
         velocity: na::zero(),
         ang_vel: 0.,
+        image: String::from("/player.png"),
         bbox_size: PLAYER_BBOX,
         life: PLAYER_LIFE,
     }
@@ -125,6 +130,7 @@ fn create_rock() -> Actor {
         facing: 0.,
         velocity: na::zero(),
         ang_vel: 0.,
+        image: String::from("/rock.png"),
         bbox_size: ROCK_BBOX,
         life: ROCK_LIFE,
     }
@@ -137,6 +143,7 @@ fn create_shot() -> Actor {
         facing: 0.,
         velocity: na::zero(),
         ang_vel: SHOT_ANG_VEL,
+        image: String::from("/shot.png"),
         bbox_size: SHOT_BBOX,
         life: SHOT_LIFE,
     }
@@ -256,41 +263,15 @@ fn world_to_screen_coords(screen_width: u32, screen_height: u32, point: Point2) 
 /// just hard-coded.
 /// **********************************************************************
 
-struct Assets {
-    player_image: graphics::Image,
-    shot_image: graphics::Image,
-    rock_image: graphics::Image,
-    font: graphics::Font,
-    shot_sound: audio::Source,
-    hit_sound: audio::Source,
-}
-
-impl Assets {
-    fn new(ctx: &mut Context) -> GameResult<Assets> {
-        let player_image = graphics::Image::new(ctx, "/player.png")?;
-        let shot_image = graphics::Image::new(ctx, "/shot.png")?;
-        let rock_image = graphics::Image::new(ctx, "/rock.png")?;
-        let font = graphics::Font::new(ctx, "/DejaVuSerif.ttf", 18)?;
-
-        let shot_sound = audio::Source::new(ctx, "/pew.ogg")?;
-        let hit_sound = audio::Source::new(ctx, "/boom.ogg")?;
-        Ok(Assets {
-            player_image,
-            shot_image,
-            rock_image,
-            font,
-            shot_sound,
-            hit_sound,
-        })
-    }
-
-    fn actor_image(&mut self, actor: &Actor) -> &mut graphics::Image {
-        match actor.tag {
-            ActorType::Player => &mut self.player_image,
-            ActorType::Rock => &mut self.rock_image,
-            ActorType::Shot => &mut self.shot_image,
-        }
-    }
+fn load_assets(ctx: &mut Context) -> Assets {
+    Assets::new(ctx, vec![
+        "/player.png",
+        "/rock.png",
+        "/shot.png",
+        "/font.ttf",
+        "/pew.ogg",
+        "/boom.ogg",        
+    ])
 }
 
 /// **********************************************************************
@@ -359,9 +340,10 @@ impl MainState {
 
         print_instructions();
 
-        let assets = Assets::new(ctx)?;
-        let score_disp = graphics::Text::new(ctx, "score", &assets.font)?;
-        let level_disp = graphics::Text::new(ctx, "level", &assets.font)?;
+        let assets = load_assets(ctx);
+        let font = assets.get_font("/font.ttf").unwrap();
+        let score_disp = graphics::Text::new(ctx, "score", &font)?;
+        let level_disp = graphics::Text::new(ctx, "level", &font)?;
 
         let player = create_player();
         let rocks = create_rocks(5, player.pos, 400.0, 1500.0);
@@ -397,7 +379,7 @@ impl MainState {
         shot.velocity.y = SHOT_SPEED * direction.y;
 
         self.shots.push(shot);
-        let _ = self.assets.shot_sound.play();
+        let _ = self.assets.get_sound("/pew.ogg").unwrap().play();
     }
 
     fn clear_dead_stuff(&mut self) {
@@ -419,7 +401,7 @@ impl MainState {
                     rock.life = 0.0;
                     self.score += 1;
                     self.gui_dirty = true;
-                    let _ = self.assets.hit_sound.play();
+                    let _ = self.assets.get_sound("/boom.ogg").unwrap().play();
                 }
             }
         }
@@ -436,7 +418,7 @@ impl MainState {
 
     fn update_ui(&mut self, ctx: &mut Context) {
         let score_str = format!("Score: {}", self.score);
-        let score_text = graphics::Text::new(ctx, &score_str, &self.assets.font).unwrap();
+        let score_text = graphics::Text::new(ctx, &score_str, &self.assets.get_font("/font.ttf").unwrap()).unwrap();
 
         self.score_display = score_text;
     }
@@ -460,7 +442,7 @@ fn draw_actor(
 ) -> GameResult<()> {
     let (screen_w, screen_h) = world_coords;
     let pos = world_to_screen_coords(screen_w, screen_h, actor.pos);
-    let image = assets.actor_image(actor);
+    let image = assets.get_image(actor.image.clone()).unwrap();
     let drawparams = graphics::DrawParam {
         dest: pos,
         rotation: actor.facing as f32,
