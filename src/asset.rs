@@ -71,15 +71,13 @@ impl Assets {
         let sounds = AssetLibrary::new();
         
         for f in files {
-            match f[f.len()-3..] {
+            match &f[f.len()-3..] {
                 "png" | "jpg" => images.load(ctx, f).unwrap(),
                 "ogg" => sounds.load(ctx, f).unwrap(),
                 "ttf" => fonts.load(ctx, f).unwrap(),
             }
-            
         }
         
-
         Self {
             images: images,
             fonts: fonts,
