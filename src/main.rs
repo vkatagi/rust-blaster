@@ -62,6 +62,13 @@ struct Actor {
     // for players and rocks, it is the actual hit points.
     life: f32,
 }
+#[derive(Debug)]
+struct Player {
+    actor: Actor,
+    input: InputState,
+    last_shot_at: f32
+}
+
 
 
 const PLAYER_LIFE: f32 = 1.0;
@@ -76,7 +83,7 @@ const SHOT_BBOX: f32 = 6.0;
 /// Now we have some constructor functions for different game objects.
 /// **********************************************************************
 
-fn create_player() -> Actor {
+fn create_player_actor() -> Actor {
     Actor {
         tag: ActorType::Player,
         pos: Point2::origin(),
@@ -85,6 +92,14 @@ fn create_player() -> Actor {
         ang_vel: 0.,
         bbox_size: PLAYER_BBOX,
         life: PLAYER_LIFE,
+    }
+}
+
+fn create_player() -> Player {
+    Player {
+        actor: create_player_actor(),
+        input: InputState::default(),
+        last_shot_at: 0.0,
     }
 }
 
@@ -294,15 +309,14 @@ fn get_level_time(ctx: &mut Context, state: &MainState) -> f32 {
 }
 
 struct MainState {
-    player: Actor,
+    local_player_index: i32,
+    players: Vec<Player>,
     shots: Vec<Actor>,
     rocks: Vec<Actor>,
     score: i32,
     assets: Assets,
     screen_width: u32,
     screen_height: u32,
-    input: InputState,
-    player_shot_timeout: f32,
     score_display: graphics::Text,
     level_display: graphics::Text,
     start_time: std::time::Duration,
@@ -323,9 +337,10 @@ impl MainState {
         let score_disp = graphics::Text::new(ctx, "score", &assets.font)?;
         let level_disp = graphics::Text::new(ctx, "level", &assets.font)?;
 
-        let player = create_player();
+        let mut players = Vec::new();
         let rocks = Vec::new();
 
+        players.push(create_player());
 
         let args: std::vec::Vec<String> = env::args().collect();
         let mut diff_mult = 1.0;
@@ -336,15 +351,14 @@ impl MainState {
         println!("Difficulty Multiplier: {:?}", diff_mult);
 
         let mut s = MainState {
-            player,
+            local_player_index: 0,
+            players: players,
             shots: Vec::new(),
             rocks: rocks,
             score: 0,
             assets,
             screen_width: ctx.conf.window_mode.width,
             screen_height: ctx.conf.window_mode.height,
-            input: InputState::default(),
-            player_shot_timeout: 0.0,
             score_display: score_disp,
             level_display: level_disp,
             start_time: ggez::timer::get_time_since_start(ctx),
@@ -357,21 +371,24 @@ impl MainState {
         Ok(s)
     }
 
-    fn fire_player_shot(&mut self) {
-        self.player_shot_timeout = PLAYER_SHOT_TIME;
+    fn is_server(&self) -> bool {
+        self.local_player_index == 0
+    }
 
-        let player = &self.player;
+    fn fire_player_shot(assets: &Assets, shots_ref: &mut Vec<Actor>, player: &Player) {
+       
+        let player_actor = &player.actor;
         for i in -1..2 {
             let mut shot = create_shot();
-            shot.pos = player.pos;
-            shot.facing = player.facing;
+            shot.pos = player_actor.pos;
+            shot.facing = player_actor.facing;
             let direction = vec_from_angle(shot.facing);
 
             shot.velocity.x = SHOT_SPEED * direction.x + (i as f32) * SHOT_SPEED / 3.0;
             shot.velocity.y = SHOT_SPEED * direction.y;
-            self.shots.push(shot);
+            shots_ref.push(shot);
         }
-        let _ = self.assets.shot_sound.play();
+        let _ = assets.shot_sound.play();
     }
 
     fn clear_dead_stuff(&mut self) {
@@ -396,10 +413,15 @@ impl MainState {
     fn handle_collisions(&mut self, ctx: &ggez::Context) {
         let mut should_restart = false;
         for rock in &mut self.rocks {
-            let pdistance = rock.pos - self.player.pos;
-            if pdistance.norm() < (self.player.bbox_size + rock.bbox_size) {
-                should_restart = true;
+
+            for player_obj in &self.players {
+                let player = &player_obj.actor;
+                let pdistance = rock.pos - player.pos;
+                if pdistance.norm() < (player.bbox_size + rock.bbox_size) {
+                    should_restart = true;
+                }
             }
+            
             for shot in &mut self.shots {
                 let distance = shot.pos - rock.pos;
                 if distance.norm() < (shot.bbox_size + rock.bbox_size) {
@@ -416,23 +438,7 @@ impl MainState {
             self.restart_game(ctx);
         }
     }
-/*
-    fn create_rocks(num: i32, exclusion: Point2, min_radius: f32, max_radius: f32) -> Vec<Actor> {
-        assert!(max_radius > min_radius);
-        let new_rock = |_| {
-        {
-            t mut rock = create_rock();
-            let angle = rand::random::<f32>() * 0.35 * std::f32::consts::PI + 180.0;
-            let x_pos = rand::random::<f32>() * (max_radius - min_radius) + min_radius;
-            rock.pos = exclusion + vec_from_angle(r_angle) * r_distance;
-            rock.velocity = random_vec(MAX_ROCK_VEL);
-            rock   
-        }
-        
-        };
-        (0..num).map(new_rock).collect()
-    }
-*/
+
     fn spawn_rocks(&mut self, delta: f32) {
         let loops = (delta / 0.004).round() as i32;
 
@@ -478,6 +484,19 @@ impl MainState {
         self.score_display = score_text;
         self.level_display = level_text;
     }
+
+    fn get_local_player(&mut self) -> &mut Player {
+        &mut self.players[self.local_player_index as usize]
+    }
+/*
+    fn loop_on_server(&mut self, ctx: &mut Context, delta: f32) {
+        unimplemented!();
+    }
+
+    fn loop_on_client(&mut self, ctx: &mut Context, delta: f32) {
+        unimplemented!();
+    }
+*/
 }
 
 /// **********************************************************************
@@ -521,23 +540,36 @@ impl EventHandler for MainState {
             let seconds = 1.0 / (DESIRED_FPS as f32);
             
             self.curr_time = get_level_time(ctx, self);
-            
-            // Update the player state based on the user input.
-            player_handle_input(&mut self.player, &self.input, seconds);
-            self.player_shot_timeout -= seconds;
-            if self.input.fire && self.player_shot_timeout < 0.0 {
-                self.fire_player_shot();
+
+            if !self.is_server() {
+                break;
+            }
+        
+            for player_obj in &mut self.players {
+                player_handle_input(&mut player_obj.actor, &player_obj.input, seconds);
+            }
+        
+            for player_obj in &mut self.players {
+                let input = &player_obj.input;
+                if input.fire && player_obj.last_shot_at <= self.curr_time - PLAYER_SHOT_TIME {
+                    player_obj.last_shot_at = self.curr_time;
+                    MainState::fire_player_shot(&self.assets, &mut self.shots, player_obj);
+                }
             }
 
             // Update the physics for all actors.
             // First the player...
-            update_actor_position(&mut self.player, seconds);
-            wrap_actor_position(
-                &mut self.player,
-                self.screen_width as f32,
-                self.screen_height as f32,
-            );
+            for player_obj in &mut self.players {
+                let player = &mut player_obj.actor;
+                update_actor_position(player, seconds);
 
+                wrap_actor_position(
+                    player,
+                    self.screen_width as f32,
+                    self.screen_height as f32,
+                );
+            }
+            
             // Then the shots...
             for act in &mut self.shots {
                 update_actor_position(act, seconds);
@@ -567,14 +599,6 @@ impl EventHandler for MainState {
             self.spawn_rocks(seconds);
 
             self.update_ui(ctx);
-            
-            // Finally we check for our end state.
-            // I want to have a nice death screen eventually,
-            // but for now we just quit.
-            if self.player.life <= 0.0 {
-                println!("Game over!");
-                let _ = ctx.quit();
-            }
         }
 
         Ok(())
@@ -589,10 +613,11 @@ impl EventHandler for MainState {
         {
             let assets = &mut self.assets;
             let coords = (self.screen_width, self.screen_height);
-
-            let p = &self.player;
-            draw_actor(assets, ctx, p, coords)?;
-
+            
+            for p_obj in &self.players {
+                draw_actor(assets, ctx, &p_obj.actor, coords)?;
+            }
+            
             for s in &self.shots {
                 draw_actor(assets, ctx, s, coords)?;
             }
@@ -624,26 +649,22 @@ impl EventHandler for MainState {
     // Handle key events.  These just map keyboard events
     // and alter our input state appropriately.
     fn key_down_event(&mut self, ctx: &mut Context, keycode: Keycode, _keymod: Mod, _repeat: bool) {
+        let input_ref = &mut self.get_local_player().input;
         match keycode {
             Keycode::Up => {
-                self.input.up = true;
+                input_ref.up = true;
             }
             Keycode::Down => {
-                self.input.down = true;
+                input_ref.down = true;
             }
             Keycode::Left => {
-                self.input.left = true;
+                input_ref.left = true;
             }
             Keycode::Right => {
-                self.input.right = true;
+                input_ref.right = true;
             }
             Keycode::Space => {
-                self.input.fire = true;
-            }
-            Keycode::P => {
-                let img = graphics::screenshot(ctx).expect("Could not take screenshot");
-                img.encode(ctx, graphics::ImageFormat::Png, "/screenshot.png")
-                    .expect("Could not save screenshot");
+                input_ref.fire = true;
             }
             Keycode::Escape => ctx.quit().unwrap(),
             _ => (), // Do nothing
@@ -651,21 +672,22 @@ impl EventHandler for MainState {
     }
 
     fn key_up_event(&mut self, _ctx: &mut Context, keycode: Keycode, _keymod: Mod, _repeat: bool) {
+        let input_ref = &mut self.get_local_player().input;
         match keycode {
             Keycode::Up => {
-                self.input.up = false;
+                input_ref.up = false;
             }
             Keycode::Down => {
-                self.input.down = false;
+                input_ref.down = false;
             }
             Keycode::Left => {
-                self.input.left = false;
+                input_ref.left = false;
             }
             Keycode::Right => {
-                self.input.right = false;
+                input_ref.right = false;
             }
             Keycode::Space => {
-                self.input.fire = false;
+                input_ref.fire = false;
             }
             _ => (), // Do nothing
         }
