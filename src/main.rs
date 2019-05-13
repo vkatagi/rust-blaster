@@ -18,7 +18,8 @@ use std::path;
 
 use serde::{Deserialize, Serialize};
 
-
+use std::thread;
+use std::sync::{Mutex, Arc};
 
 /// *********************************************************************
 /// Basic stuff, make some helpers for vector functions.
@@ -332,7 +333,7 @@ impl Assets {
 /// the user's input state so that we turn keyboard events into something
 /// state-based and device-independent.
 /// **********************************************************************
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct InputState {
     fire: bool,
     up: bool,
@@ -341,32 +342,11 @@ struct InputState {
     left: bool
 }
 
-impl Default for InputState {
-    fn default() -> Self {
-        InputState {
-            fire: false,
-            up: false,
-            down: false,
-            right: false,
-            left: false
-        }
-    }
-}
 
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 struct PlaySounds {
     play_hit: bool,
     play_shot: bool,
-}
-
-impl Default for PlaySounds {
-    fn default() -> Self {
-        PlaySounds {
-            play_hit: false,
-            play_shot: false,
-        }
-    }
 }
 
 ///
@@ -453,7 +433,7 @@ struct MainState {
 }
 
 impl MainState {
-    fn new(ctx: &mut Context) -> GameResult<MainState> {
+    fn new(ctx: &mut Context) -> MainState {
         ctx.print_resource_stats();
         graphics::set_background_color(ctx, (0, 0, 0, 255).into());
 
@@ -461,9 +441,9 @@ impl MainState {
 
         print_instructions();
 
-        let assets = Assets::new(ctx)?;
-        let score_disp = graphics::Text::new(ctx, "score", &assets.font)?;
-        let level_disp = graphics::Text::new(ctx, "level", &assets.font)?;
+        let assets = Assets::new(ctx).expect("Failed to load assets. Terminating");
+        let score_disp = graphics::Text::new(ctx, "score", &assets.font).expect("Failed to make text. Terminating");
+        let level_disp = graphics::Text::new(ctx, "level", &assets.font).expect("Failed to make text. Terminating");
 
         let mut players = Vec::new();
         let rocks = Vec::new();
@@ -498,7 +478,7 @@ impl MainState {
         
         s.restart_game(ctx);
 
-        Ok(s)
+        s
     }
 
     fn is_server(&self) -> bool {
@@ -624,59 +604,8 @@ impl MainState {
     fn clear_sounds(&mut self) {
         self.play_sounds = PlaySounds::default();
     }
-/*
-    fn loop_on_server(&mut self, ctx: &mut Context, delta: f32) {
-        unimplemented!();
-    }
 
-    fn loop_on_client(&mut self, ctx: &mut Context, delta: f32) {
-        unimplemented!();
-    }
-*/
-}
-/// Utility wrapper for level time.
-fn get_level_time(ctx: &mut Context, state: &MainState) -> f32 {
-    let current = ggez::timer::get_time_since_start(ctx);
-    let duration = current - state.start_time;
-    duration.as_millis() as f32 / 1000.0
-}
-
-
-/// **********************************************************************
-/// A couple of utility functions.
-/// **********************************************************************
-
-fn print_instructions() {
-    println!();
-    println!("Welcome to Rust-Blaster");
-    println!();
-}
-
-fn draw_actor(
-    assets: &mut Assets,
-    ctx: &mut Context,
-    actor: &Actor,
-    world_coords: (u32, u32),
-) -> GameResult<()> {
-    let (screen_w, screen_h) = world_coords;
-    let pos = world_to_screen_coords(screen_w, screen_h, Point2::new(actor.pos.x, actor.pos.y));
-    let image = assets.actor_image(actor);
-    let drawparams = graphics::DrawParam {
-        dest: pos,
-        rotation: actor.facing as f32,
-        offset: graphics::Point2::new(0.5, 0.5),
-        ..Default::default()
-    };
-    graphics::draw_ex(ctx, image, drawparams)
-}
-
-/// **********************************************************************
-/// Now we implement the `EventHandler` trait from `ggez::event`, which provides
-/// ggez with callbacks for updating and drawing our game, as well as
-/// handling input events.
-/// **********************************************************************
-impl EventHandler for MainState {
-    fn update(&mut self, ctx: &mut Context) -> GameResult<()> {
+    fn s_update(&mut self, ctx: &mut Context) -> GameResult<()> {
         const DESIRED_FPS: u32 = 144;
         
         self.clear_sounds();
@@ -751,7 +680,7 @@ impl EventHandler for MainState {
         Ok(())
     }
 
-    fn draw(&mut self, ctx: &mut Context) -> GameResult<()> {
+    fn s_draw(&mut self, ctx: &mut Context) -> GameResult<()> {
         // Our drawing is quite simple.
         // Just clear the screen...
         graphics::clear(ctx);
@@ -798,7 +727,7 @@ impl EventHandler for MainState {
 
     // Handle key events.  These just map keyboard events
     // and alter our input state appropriately.
-    fn key_down_event(&mut self, ctx: &mut Context, keycode: Keycode, _keymod: Mod, _repeat: bool) {
+    fn s_key_down_event(&mut self, ctx: &mut Context, keycode: Keycode, _keymod: Mod, _repeat: bool) {
         let input_ref = &mut self.local_input;
         match keycode {
             Keycode::Up => {
@@ -821,7 +750,7 @@ impl EventHandler for MainState {
         }
     }
 
-    fn key_up_event(&mut self, _ctx: &mut Context, keycode: Keycode, _keymod: Mod, _repeat: bool) {
+    fn s_key_up_event(&mut self, _ctx: &mut Context, keycode: Keycode, _keymod: Mod, _repeat: bool) {
         let input_ref = &mut self.local_input;
         match keycode {
             Keycode::Up => {
@@ -842,6 +771,100 @@ impl EventHandler for MainState {
             _ => (), // Do nothing
         }
     }
+
+}
+/// Utility wrapper for level time.
+fn get_level_time(ctx: &mut Context, state: &MainState) -> f32 {
+    let current = ggez::timer::get_time_since_start(ctx);
+    let duration = current - state.start_time;
+    duration.as_millis() as f32 / 1000.0
+}
+
+
+/// **********************************************************************
+/// A couple of utility functions.
+/// **********************************************************************
+
+fn print_instructions() {
+    println!();
+    println!("Welcome to Rust-Blaster");
+    println!();
+}
+
+fn draw_actor(
+    assets: &mut Assets,
+    ctx: &mut Context,
+    actor: &Actor,
+    world_coords: (u32, u32),
+) -> GameResult<()> {
+    let (screen_w, screen_h) = world_coords;
+    let pos = world_to_screen_coords(screen_w, screen_h, Point2::new(actor.pos.x, actor.pos.y));
+    let image = assets.actor_image(actor);
+    let drawparams = graphics::DrawParam {
+        dest: pos,
+        rotation: actor.facing as f32,
+        offset: graphics::Point2::new(0.5, 0.5),
+        ..Default::default()
+    };
+    graphics::draw_ex(ctx, image, drawparams)
+}
+
+
+struct StatePtr {
+    state: Arc<Mutex<MainState>>
+}
+
+impl StatePtr {
+    fn new(ctx: &mut Context) -> StatePtr {
+        StatePtr {
+            state: Arc::new(Mutex::new(MainState::new(ctx))),
+        }
+    }
+
+    fn get_ref(&mut self) -> StatePtr {
+        StatePtr {
+            state: self.state.clone()
+        }
+    }
+}
+
+impl EventHandler for StatePtr {
+    fn draw(&mut self, ctx: &mut Context) -> GameResult<()> {
+        self.state.lock().unwrap().s_draw(ctx)
+    }
+    fn update(&mut self, ctx: &mut Context) -> GameResult<()> {
+        self.state.lock().unwrap().s_update(ctx)
+    }
+
+    fn key_down_event(&mut self, ctx: &mut Context, keycode: Keycode, _keymod: Mod, _repeat: bool) {
+        self.state.lock().unwrap().s_key_down_event(ctx, keycode, _keymod, _repeat)
+    }
+
+    fn key_up_event(&mut self, _ctx: &mut Context, keycode: Keycode, _keymod: Mod, _repeat: bool) {
+        self.state.lock().unwrap().s_key_up_event(_ctx, keycode, _keymod, _repeat)
+    }
+}
+
+/// **********************************************************************
+/// Now we implement the `EventHandler` trait from `ggez::event`, which provides
+/// ggez with callbacks for updating and drawing our game, as well as
+/// handling input events.
+/// **********************************************************************
+impl EventHandler for MainState {
+    fn key_down_event(&mut self, ctx: &mut Context, keycode: Keycode, _keymod: Mod, _repeat: bool) {
+        self.s_key_down_event(ctx, keycode, _keymod, _repeat)
+    }
+
+    fn key_up_event(&mut self, _ctx: &mut Context, keycode: Keycode, _keymod: Mod, _repeat: bool) {
+        self.s_key_up_event(_ctx, keycode, _keymod, _repeat)
+    }
+
+    fn draw(&mut self, ctx: &mut Context) -> GameResult<()> {
+        self.s_draw(ctx)
+    }
+    fn update(&mut self, ctx: &mut Context) -> GameResult<()> {
+        self.s_update(ctx) 
+    }
 }
 
 /// **********************************************************************
@@ -857,19 +880,36 @@ pub fn main() {
     cb = cb.add_resource_path(path::PathBuf::from("resources"));
 
     let ctx = &mut cb.build().unwrap();
+    
+    // No threads
+    // let mut game = MainState::new(ctx);
+    // let result = event::run(ctx, &mut game);
+    
+    let mut game_ptr = StatePtr::new(ctx);
 
-    match MainState::new(ctx) {
-        Err(e) => {
-            println!("Could not load game!");
-            println!("Error: {}", e);
-        }
-        Ok(ref mut game) => {
-            let result = event::run(ctx, game);
-            if let Err(e) = result {
-                println!("Error encountered running game: {}", e);
-            } else {
-                println!("Game exited cleanly.");
-            }
-        }
+    let mut net_ptr = game_ptr.get_ref();
+    thread::spawn(move || {
+        network_main(&mut net_ptr);
+    });
+
+    let result = event::run(ctx, &mut game_ptr);
+
+    if let Err(e) = result {
+        println!("Error encountered running game: {}", e);
+    } else {
+        println!("Game exited cleanly.");
+    }
+}
+
+
+
+///
+/// Networking Threads
+/// 
+
+fn network_main(state: &mut StatePtr) { 
+    for _ in 0..19999 {
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        state.state.lock().unwrap().score += 1000;
     }
 }
