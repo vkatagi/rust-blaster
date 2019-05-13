@@ -1,6 +1,5 @@
-//! An Asteroids-ish example game to show off ggez.
-//! The idea is that this game is simple but still
-//! non-trivial enough to be interesting.
+//! Based on ggez's asteroid blaster example
+//! Modified for a more refined gameplay experience
 extern crate ggez;
 
 extern crate rand;
@@ -29,13 +28,6 @@ fn vec_from_angle(angle: f32) -> Vector2 {
     let vx = angle.sin();
     let vy = angle.cos();
     Vector2::new(vx, vy)
-}
-
-/// Just makes a random `Vector2` with the given max magnitude.
-fn random_vec(max_magnitude: f32) -> Vector2 {
-    let angle = rand::random::<f32>() * 2.0 * std::f32::consts::PI;
-    let mag = rand::random::<f32>() * max_magnitude;
-    vec_from_angle(angle) * (mag)
 }
 
 /// *********************************************************************
@@ -71,26 +63,6 @@ struct Actor {
     life: f32,
 }
 
-trait Colliding {
-    fn on_collision(&self, other: &Colliding, speed: f32);
-}
-/*
-#[derive(Debug)]
-struct Transform {
-    position: Point2,
-    angle: f32,
-    scale: f32, // only uniform scaling for now
-}
-
-#[derive(Debug)]
-struct GameObject {
-    transform: Transform,
-    image: graphics::Image,
-    
-}
-*/
-
-
 
 const PLAYER_LIFE: f32 = 1.0;
 const SHOT_LIFE: f32 = 2.0;
@@ -99,8 +71,6 @@ const ROCK_LIFE: f32 = 1.0;
 const PLAYER_BBOX: f32 = 12.0;
 const ROCK_BBOX: f32 = 12.0;
 const SHOT_BBOX: f32 = 6.0;
-
-const MAX_ROCK_VEL: f32 = 250.0;
 
 /// *********************************************************************
 /// Now we have some constructor functions for different game objects.
@@ -159,15 +129,14 @@ const PLAYER_SPEED: f32 = 500.0;
 // Seconds between shots
 const PLAYER_SHOT_TIME: f32 = 0.2;
 
-fn bool_to_f(v: bool) -> f32 {
-    if v {
-        return 1.0;
-    }
-    return 0.0;
-}
-
 fn player_handle_input(actor: &mut Actor, input: &InputState, dt: f32) {
     //actor.facing += dt * PLAYER_TURN_RATE * input.xaxis;
+    fn bool_to_f(v: bool) -> f32 {
+        if v {
+            return 1.0;
+        }
+        return 0.0;
+    }
 
     let point = Point2::new(
         bool_to_f(input.right) * 1.0
@@ -209,7 +178,6 @@ fn wrap_actor_position(actor: &mut Actor, sx: f32, sy: f32) {
     } else if actor.pos.y < -screen_y_bounds {
         actor.pos.y += sy;
     }
-    
 }
 
 fn is_out_of_bounds(actor: &mut Actor, sx: f32, sy: f32) -> bool {
@@ -289,8 +257,6 @@ impl Assets {
 /// **********************************************************************
 #[derive(Debug)]
 struct InputState {
-    xaxis: f32,
-    yaxis: f32,
     fire: bool,
     up: bool,
     down: bool,
@@ -301,8 +267,6 @@ struct InputState {
 impl Default for InputState {
     fn default() -> Self {
         InputState {
-            xaxis: 0.0,
-            yaxis: 0.0,
             fire: false,
             up: false,
             down: false,
@@ -370,8 +334,6 @@ impl MainState {
         }
 
         println!("Difficulty Multiplier: {:?}", diff_mult);
-
-        
 
         let mut s = MainState {
             player,
