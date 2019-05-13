@@ -89,8 +89,8 @@ impl Assets {
     // I would prefer get<ImageAsset>("myasset.png");
     // but I could not even find if its possible to do this currently in rust.
 
-    pub fn get_image<S>(&self, name: S) -> &ImageAsset where S: Into<String> {
-        self.images.get(name).unwrap_or_else()
+    pub fn get_image<S>(&self, name: S) -> Option<&ImageAsset> where S: Into<String> {
+        self.images.get(name)
     }
 
     pub fn get_font<S>(&self, name: S) -> Option<&FontAsset> where S: Into<String> {

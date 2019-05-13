@@ -628,7 +628,7 @@ pub fn main() {
 
     cb = cb.add_resource_path(path::PathBuf::from("resources"));
 
-    let ctx = &mut cb.build().unwrap();
+    let ctx = &mut cb.build().expect("Could not 'build' game.");
 
     match MainState::new(ctx) {
         Err(e) => {
