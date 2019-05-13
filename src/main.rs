@@ -38,7 +38,7 @@ fn vec_from_angle(angle: f32) -> Vector2 {
 /// real ECS, but for this it's enough to say that all our game objects
 /// contain pretty much the same data.
 /// **********************************************************************
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum ActorType {
     Player,
     Rock,
@@ -47,7 +47,7 @@ enum ActorType {
 
 
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Actor {
     tag: ActorType,
     pos: Point2,
@@ -68,8 +68,6 @@ struct Player {
     input: InputState,
     last_shot_at: f32
 }
-
-
 
 const PLAYER_LIFE: f32 = 1.0;
 const SHOT_LIFE: f32 = 2.0;
@@ -96,12 +94,17 @@ fn create_player_actor() -> Actor {
 }
 
 fn create_player() -> Player {
+    create_player_from_actor(create_player_actor())
+}
+
+fn create_player_from_actor(actor: Actor) -> Player {
     Player {
-        actor: create_player_actor(),
+        actor: actor,
         input: InputState::default(),
         last_shot_at: 0.0,
     }
 }
+
 
 fn create_rock() -> Actor {
     Actor {
@@ -270,7 +273,7 @@ impl Assets {
 /// the user's input state so that we turn keyboard events into something
 /// state-based and device-independent.
 /// **********************************************************************
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct InputState {
     fire: bool,
     up: bool,
@@ -291,6 +294,76 @@ impl Default for InputState {
     }
 }
 
+
+#[derive(Debug, Clone)]
+struct PlaySounds {
+    play_hit: bool,
+    play_shot: bool,
+}
+
+impl Default for PlaySounds {
+    fn default() -> Self {
+        PlaySounds {
+            play_hit: false,
+            play_shot: false,
+        }
+    }
+}
+
+///
+/// Networking struct that the client receives from the server.
+///
+/// 
+
+#[derive(Debug)]
+struct NetFromServer {
+    actors: Vec<Actor>,
+    score: i32,
+    time_offset: f32,
+    play_sounds: PlaySounds,
+}
+
+impl NetFromServer {
+    fn make_from_sate(state: &MainState) -> NetFromServer {
+        let mut actors = Vec::new();
+
+        for player in &state.players {
+            actors.push(player.actor.clone());
+        }
+
+        for rock in &state.rocks {
+            actors.push(rock.clone());
+        }
+
+        for shot in &state.shots {
+            actors.push(shot.clone());
+        }
+        
+        NetFromServer {
+            actors: actors,
+            score: state.score,
+            time_offset: state.curr_time,
+            play_sounds: state.play_sounds.clone()
+        }
+    }
+
+    fn update_main_state(self, state: &mut MainState) {
+        state.score = self.score;
+
+        state.players.clear();
+        state.rocks.clear();
+        state.shots.clear();
+        
+        for actor in self.actors {
+            match actor.tag {
+                ActorType::Player => state.players.push(create_player_from_actor(actor)),
+                ActorType::Rock => state.rocks.push(actor),
+                ActorType::Shot => state.shots.push(actor),
+            }
+        }
+    }
+}
+
 /// **********************************************************************
 /// Now we're getting into the actual game loop.  The `MainState` is our
 /// game's "global" state, it keeps track of everything we need for
@@ -302,14 +375,9 @@ impl Default for InputState {
 /// this small it hardly matters.
 /// **********************************************************************
 
-fn get_level_time(ctx: &mut Context, state: &MainState) -> f32 {
-    let current = ggez::timer::get_time_since_start(ctx);
-    let duration = current - state.start_time;
-    duration.as_millis() as f32 / 1000.0
-}
-
 struct MainState {
     local_player_index: i32,
+    local_input: InputState,
     players: Vec<Player>,
     shots: Vec<Actor>,
     rocks: Vec<Actor>,
@@ -322,6 +390,7 @@ struct MainState {
     start_time: std::time::Duration,
     curr_time: f32,
     difficulty_mult: f32,
+    play_sounds: PlaySounds,
 }
 
 impl MainState {
@@ -352,6 +421,7 @@ impl MainState {
 
         let mut s = MainState {
             local_player_index: 0,
+            local_input: InputState::default(),
             players: players,
             shots: Vec::new(),
             rocks: rocks,
@@ -364,6 +434,7 @@ impl MainState {
             start_time: ggez::timer::get_time_since_start(ctx),
             curr_time: 0.0,
             difficulty_mult: diff_mult,
+            play_sounds: PlaySounds::default(),
         };
         
         s.restart_game(ctx);
@@ -375,8 +446,7 @@ impl MainState {
         self.local_player_index == 0
     }
 
-    fn fire_player_shot(assets: &Assets, shots_ref: &mut Vec<Actor>, player: &Player) {
-       
+    fn fire_player_shot(shots_ref: &mut Vec<Actor>, player: &Player) {
         let player_actor = &player.actor;
         for i in -1..2 {
             let mut shot = create_shot();
@@ -388,7 +458,6 @@ impl MainState {
             shot.velocity.y = SHOT_SPEED * direction.y;
             shots_ref.push(shot);
         }
-        let _ = assets.shot_sound.play();
     }
 
     fn clear_dead_stuff(&mut self) {
@@ -428,14 +497,13 @@ impl MainState {
                     shot.life = 0.0;
                     rock.life = 0.0;
                     self.score += 1;
-                    if !self.assets.hit_sound.playing() {
-                        let _ = self.assets.hit_sound.play();
-                    }
+                    self.play_sounds.play_hit = true;
                 }
             }
         }
         if should_restart {
             self.restart_game(ctx);
+            self.play_sounds.play_hit = true;
         }
     }
 
@@ -485,8 +553,17 @@ impl MainState {
         self.level_display = level_text;
     }
 
-    fn get_local_player(&mut self) -> &mut Player {
-        &mut self.players[self.local_player_index as usize]
+    fn play_sounds(&self) {
+        if self.play_sounds.play_hit && !self.assets.hit_sound.playing() {
+            let _ = self.assets.hit_sound.play();
+        }
+        if self.play_sounds.play_shot && !self.assets.shot_sound.playing() {
+            let _ = self.assets.shot_sound.play();
+        }
+    }
+
+    fn clear_sounds(&mut self) {
+        self.play_sounds = PlaySounds::default();
     }
 /*
     fn loop_on_server(&mut self, ctx: &mut Context, delta: f32) {
@@ -498,6 +575,13 @@ impl MainState {
     }
 */
 }
+/// Utility wrapper for level time.
+fn get_level_time(ctx: &mut Context, state: &MainState) -> f32 {
+    let current = ggez::timer::get_time_since_start(ctx);
+    let duration = current - state.start_time;
+    duration.as_millis() as f32 / 1000.0
+}
+
 
 /// **********************************************************************
 /// A couple of utility functions.
@@ -535,7 +619,8 @@ fn draw_actor(
 impl EventHandler for MainState {
     fn update(&mut self, ctx: &mut Context) -> GameResult<()> {
         const DESIRED_FPS: u32 = 144;
-
+        
+        self.clear_sounds();
         while timer::check_update_time(ctx, DESIRED_FPS) {
             let seconds = 1.0 / (DESIRED_FPS as f32);
             
@@ -544,6 +629,8 @@ impl EventHandler for MainState {
             if !self.is_server() {
                 break;
             }
+
+            self.players[0].input = self.local_input.clone();
         
             for player_obj in &mut self.players {
                 player_handle_input(&mut player_obj.actor, &player_obj.input, seconds);
@@ -553,7 +640,8 @@ impl EventHandler for MainState {
                 let input = &player_obj.input;
                 if input.fire && player_obj.last_shot_at <= self.curr_time - PLAYER_SHOT_TIME {
                     player_obj.last_shot_at = self.curr_time;
-                    MainState::fire_player_shot(&self.assets, &mut self.shots, player_obj);
+                    MainState::fire_player_shot(&mut self.shots, player_obj);
+                    self.play_sounds.play_shot = true;
                 }
             }
 
@@ -636,6 +724,9 @@ impl EventHandler for MainState {
         // Then we flip the screen...
         graphics::present(ctx);
 
+        // Play our sound queue
+        self.play_sounds();
+
         // And yield the timeslice
         // This tells the OS that we're done using the CPU but it should
         // get back to this program as soon as it can.
@@ -649,7 +740,7 @@ impl EventHandler for MainState {
     // Handle key events.  These just map keyboard events
     // and alter our input state appropriately.
     fn key_down_event(&mut self, ctx: &mut Context, keycode: Keycode, _keymod: Mod, _repeat: bool) {
-        let input_ref = &mut self.get_local_player().input;
+        let input_ref = &mut self.local_input;
         match keycode {
             Keycode::Up => {
                 input_ref.up = true;
@@ -672,7 +763,7 @@ impl EventHandler for MainState {
     }
 
     fn key_up_event(&mut self, _ctx: &mut Context, keycode: Keycode, _keymod: Mod, _repeat: bool) {
-        let input_ref = &mut self.get_local_player().input;
+        let input_ref = &mut self.local_input;
         match keycode {
             Keycode::Up => {
                 input_ref.up = false;
