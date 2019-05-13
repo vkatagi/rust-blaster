@@ -16,6 +16,10 @@ use ggez::{Context, ContextBuilder, GameResult};
 use std::env;
 use std::path;
 
+use serde::{Deserialize, Serialize};
+
+
+
 /// *********************************************************************
 /// Basic stuff, make some helpers for vector functions.
 /// ggez includes the nalgebra math library to provide lots of
@@ -38,20 +42,57 @@ fn vec_from_angle(angle: f32) -> Vector2 {
 /// real ECS, but for this it's enough to say that all our game objects
 /// contain pretty much the same data.
 /// **********************************************************************
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 enum ActorType {
     Player,
     Rock,
     Shot,
 }
 
+// Serialization for our non serializable types.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct Vec2Serial {
+    pub x: f32,
+    pub y: f32,
+}
 
+impl Vec2Serial {
+    fn from_floats(x: f32, y: f32) -> Vec2Serial {
+        Vec2Serial {
+            x,
+            y,
+        }
+    }
+}
 
-#[derive(Debug, Clone)]
+// Serialization for our non serializable types.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct ActorSerialIntermediate {
+    pub pos: Vec2Serial,
+    pub vel: Vec2Serial,
+}
+
+impl ActorSerialIntermediate {
+    fn pre_serialize(&mut self, actor: &Actor) {
+        self.pos = Vec2Serial::from_floats(actor.pos.x, actor.pos.y);
+        self.vel = Vec2Serial::from_floats(actor.velocity.x, actor.velocity.y);
+    }
+
+    fn post_deserialize(&self, actor: &mut Actor) {
+        actor.pos = Vector2::new(self.pos.x, self.pos.y);
+        actor.velocity = Vector2::new(self.vel.x, self.vel.y);
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct Actor {
     tag: ActorType,
-    pos: Point2,
+    
+    #[serde(skip, default = "na::zero")]
+    pos: Vector2,
     facing: f32,
+
+    #[serde(skip, default = "na::zero")]
     velocity: Vector2,
     ang_vel: f32,
     bbox_size: f32,
@@ -61,7 +102,22 @@ struct Actor {
     // for shots, it is the time left to live,
     // for players and rocks, it is the actual hit points.
     life: f32,
+
+    serial_interm: ActorSerialIntermediate,
 }
+
+impl Actor {
+    fn pre_serialize(&mut self) {
+        self.serial_interm.pos = Vec2Serial::from_floats(self.pos.x, self.pos.y);
+        self.serial_interm.vel = Vec2Serial::from_floats(self.velocity.x, self.velocity.y);
+    }
+
+    fn post_deserialize(&mut self) {
+        self.pos = Vector2::new(self.serial_interm.pos.x, self.serial_interm.pos.y);
+        self.velocity = Vector2::new(self.serial_interm.vel.x, self.serial_interm.vel.y);  
+    }
+}
+
 #[derive(Debug)]
 struct Player {
     actor: Actor,
@@ -84,12 +140,13 @@ const SHOT_BBOX: f32 = 6.0;
 fn create_player_actor() -> Actor {
     Actor {
         tag: ActorType::Player,
-        pos: Point2::origin(),
+        pos: na::zero(),
         facing: 0.,
         velocity: na::zero(),
         ang_vel: 0.,
         bbox_size: PLAYER_BBOX,
         life: PLAYER_LIFE,
+        serial_interm: ActorSerialIntermediate::default(),
     }
 }
 
@@ -109,24 +166,26 @@ fn create_player_from_actor(actor: Actor) -> Player {
 fn create_rock() -> Actor {
     Actor {
         tag: ActorType::Rock,
-        pos: Point2::origin(),
+        pos: na::zero(),
         facing: 0.,
         velocity: na::zero(),
         ang_vel: 0.,
         bbox_size: ROCK_BBOX,
         life: ROCK_LIFE,
+        serial_interm: ActorSerialIntermediate::default(),
     }
 }
 
 fn create_shot() -> Actor {
     Actor {
         tag: ActorType::Shot,
-        pos: Point2::origin(),
+        pos: na::zero(),
         facing: 0.,
         velocity: na::zero(),
         ang_vel: SHOT_ANG_VEL,
         bbox_size: SHOT_BBOX,
         life: SHOT_LIFE,
+        serial_interm: ActorSerialIntermediate::default(),
     }
 }
 /// *********************************************************************
@@ -156,7 +215,7 @@ fn player_handle_input(actor: &mut Actor, input: &InputState, dt: f32) {
         return 0.0;
     }
 
-    let point = Point2::new(
+    let point = Vector2::new(
         bool_to_f(input.right) * 1.0
       + bool_to_f(input.left) * -1.0
       , 
@@ -164,7 +223,7 @@ fn player_handle_input(actor: &mut Actor, input: &InputState, dt: f32) {
       + bool_to_f(input.down) * -1.0
     );
 
-    actor.pos.coords += point.coords * dt * PLAYER_SPEED;
+    actor.pos += point * dt * PLAYER_SPEED;
 }
 
 const MAX_PHYSICS_VEL: f32 = 950.0;
@@ -273,7 +332,7 @@ impl Assets {
 /// the user's input state so that we turn keyboard events into something
 /// state-based and device-independent.
 /// **********************************************************************
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct InputState {
     fire: bool,
     up: bool,
@@ -295,7 +354,7 @@ impl Default for InputState {
 }
 
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct PlaySounds {
     play_hit: bool,
     play_shot: bool,
@@ -315,7 +374,7 @@ impl Default for PlaySounds {
 ///
 /// 
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 struct NetFromServer {
     actors: Vec<Actor>,
     score: i32,
@@ -324,7 +383,7 @@ struct NetFromServer {
 }
 
 impl NetFromServer {
-    fn make_from_sate(state: &MainState) -> NetFromServer {
+    fn make_from_state(state: &MainState) -> NetFromServer {
         let mut actors = Vec::new();
 
         for player in &state.players {
@@ -533,7 +592,7 @@ impl MainState {
 
                 let speed = rand::random::<f32>() * speed_mod + speed_mod / 2.0;
                 
-                rock.pos = Point2::new(x_pos, y_pos);
+                rock.pos = Vector2::new(x_pos, y_pos);
                 rock.velocity = vec_from_angle(std::f32::consts::PI + angle) * (speed);
                 
                 self.rocks.push(rock);
@@ -600,7 +659,7 @@ fn draw_actor(
     world_coords: (u32, u32),
 ) -> GameResult<()> {
     let (screen_w, screen_h) = world_coords;
-    let pos = world_to_screen_coords(screen_w, screen_h, actor.pos);
+    let pos = world_to_screen_coords(screen_w, screen_h, Point2::new(actor.pos.x, actor.pos.y));
     let image = assets.actor_image(actor);
     let drawparams = graphics::DrawParam {
         dest: pos,
