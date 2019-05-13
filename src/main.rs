@@ -141,26 +141,6 @@ fn create_shot() -> Actor {
         life: SHOT_LIFE,
     }
 }
-
-/// Create the given number of rocks.
-/// Makes sure that none of them are within the
-/// given exclusion zone (nominally the player)
-/// Note that this *could* create rocks outside the
-/// bounds of the playing field, so it should be
-/// called before `wrap_actor_position()` happens.
-fn create_rocks(num: i32, exclusion: Point2, min_radius: f32, max_radius: f32) -> Vec<Actor> {
-    assert!(max_radius > min_radius);
-    let new_rock = |_| {
-        let mut rock = create_rock();
-        let r_angle = rand::random::<f32>() * 2.0 * std::f32::consts::PI;
-        let r_distance = rand::random::<f32>() * (max_radius - min_radius) + min_radius;
-        rock.pos = exclusion + vec_from_angle(r_angle) * r_distance;
-        rock.velocity = random_vec(MAX_ROCK_VEL);
-        rock
-    };
-    (0..num).map(new_rock).collect()
-}
-
 /// *********************************************************************
 /// Now we make functions to handle physics.  We do simple Newtonian
 /// physics (so we do have inertia), and cap the max speed so that we
@@ -188,7 +168,6 @@ fn bool_to_f(v: bool) -> f32 {
 
 fn player_handle_input(actor: &mut Actor, input: &InputState, dt: f32) {
     //actor.facing += dt * PLAYER_TURN_RATE * input.xaxis;
-    println!("{:?}", input);
 
     let point = Point2::new(
         bool_to_f(input.right) * 1.0
@@ -218,7 +197,6 @@ fn update_actor_position(actor: &mut Actor, dt: f32) {
 /// screen, so if it goes off the left side of the screen it
 /// will re-enter on the right side and so on.
 fn wrap_actor_position(actor: &mut Actor, sx: f32, sy: f32) {
-    // Wrap screen
     let screen_x_bounds = sx / 2.0;
     let screen_y_bounds = sy / 2.0;
     if actor.pos.x > screen_x_bounds {
@@ -231,7 +209,18 @@ fn wrap_actor_position(actor: &mut Actor, sx: f32, sy: f32) {
     } else if actor.pos.y < -screen_y_bounds {
         actor.pos.y += sy;
     }
+    
 }
+
+fn is_out_of_bounds(actor: &mut Actor, sx: f32, sy: f32) -> bool {
+    let screen_x_bounds = sx / 2.0;
+    let screen_y_bounds = sy / 2.0;
+
+    actor.pos.x > screen_x_bounds 
+        || actor.pos.x < -screen_x_bounds 
+        || actor.pos.y > screen_y_bounds
+        || actor.pos.y < -screen_y_bounds
+}    
 
 fn handle_timed_life(actor: &mut Actor, dt: f32) {
     actor.life -= dt;
@@ -334,20 +323,27 @@ impl Default for InputState {
 /// this small it hardly matters.
 /// **********************************************************************
 
+fn get_level_time(ctx: &mut Context, state: &MainState) -> f32 {
+    let current = ggez::timer::get_time_since_start(ctx);
+    let duration = current - state.start_time;
+    duration.as_millis() as f32 / 1000.0
+}
+
 struct MainState {
     player: Actor,
     shots: Vec<Actor>,
     rocks: Vec<Actor>,
-    respawn_time: f32,
     score: i32,
     assets: Assets,
     screen_width: u32,
     screen_height: u32,
     input: InputState,
     player_shot_timeout: f32,
-    gui_dirty: bool,
     score_display: graphics::Text,
     level_display: graphics::Text,
+    start_time: std::time::Duration,
+    curr_time: f32,
+    difficulty_mult: f32,
 }
 
 impl MainState {
@@ -364,23 +360,37 @@ impl MainState {
         let level_disp = graphics::Text::new(ctx, "level", &assets.font)?;
 
         let player = create_player();
-        let rocks = create_rocks(5, player.pos, 400.0, 1500.0);
+        let rocks = Vec::new();
 
-        let s = MainState {
+
+        let args: std::vec::Vec<String> = env::args().collect();
+        let mut diff_mult = 1.0;
+        if args.len() > 1 {
+            diff_mult = args[1].parse().unwrap_or(1.0);
+        }
+
+        println!("Difficulty Multiplier: {:?}", diff_mult);
+
+        
+
+        let mut s = MainState {
             player,
             shots: Vec::new(),
-            rocks,
-            respawn_time: 5.0,
+            rocks: rocks,
             score: 0,
             assets,
             screen_width: ctx.conf.window_mode.width,
             screen_height: ctx.conf.window_mode.height,
             input: InputState::default(),
             player_shot_timeout: 0.0,
-            gui_dirty: true,
             score_display: score_disp,
             level_display: level_disp,
+            start_time: ggez::timer::get_time_since_start(ctx),
+            curr_time: 0.0,
+            difficulty_mult: diff_mult,
         };
+        
+        s.restart_game(ctx);
 
         Ok(s)
     }
@@ -389,14 +399,16 @@ impl MainState {
         self.player_shot_timeout = PLAYER_SHOT_TIME;
 
         let player = &self.player;
-        let mut shot = create_shot();
-        shot.pos = player.pos;
-        shot.facing = player.facing;
-        let direction = vec_from_angle(shot.facing);
-        shot.velocity.x = SHOT_SPEED * direction.x;
-        shot.velocity.y = SHOT_SPEED * direction.y;
+        for i in -1..2 {
+            let mut shot = create_shot();
+            shot.pos = player.pos;
+            shot.facing = player.facing;
+            let direction = vec_from_angle(shot.facing);
 
-        self.shots.push(shot);
+            shot.velocity.x = SHOT_SPEED * direction.x + (i as f32) * SHOT_SPEED / 3.0;
+            shot.velocity.y = SHOT_SPEED * direction.y;
+            self.shots.push(shot);
+        }
         let _ = self.assets.shot_sound.play();
     }
 
@@ -405,12 +417,26 @@ impl MainState {
         self.rocks.retain(|r| r.life > 0.0);
     }
 
-    fn handle_collisions(&mut self) {
+    fn restart_game(&mut self, ctx: &ggez::Context) {
+        println!("GAME OVER: Time: {:?} | Score: {:?} | On Difficulty: {:?}", self.curr_time, self.score, self.difficulty_mult);
+
+     
+        self.score = 0;
+        self.start_time = ggez::timer::get_time_since_start(ctx);
+        for shot in &mut self.shots {
+            shot.life = 0.0;
+        }
+        for rock in &mut self.rocks {
+            rock.life = 0.0;
+        }
+    }
+
+    fn handle_collisions(&mut self, ctx: &ggez::Context) {
+        let mut should_restart = false;
         for rock in &mut self.rocks {
             let pdistance = rock.pos - self.player.pos;
             if pdistance.norm() < (self.player.bbox_size + rock.bbox_size) {
-                    self.score = 0;
-                    self.gui_dirty = true;
+                should_restart = true;
             }
             for shot in &mut self.shots {
                 let distance = shot.pos - rock.pos;
@@ -418,27 +444,77 @@ impl MainState {
                     shot.life = 0.0;
                     rock.life = 0.0;
                     self.score += 1;
-                    self.gui_dirty = true;
-                    let _ = self.assets.hit_sound.play();
+                    if !self.assets.hit_sound.playing() {
+                        let _ = self.assets.hit_sound.play();
+                    }
                 }
             }
         }
-    }
-
-    fn check_for_level_respawn(&mut self) {
-        if self.respawn_time <= 0.0 {
-            self.respawn_time = self.rocks.len() as f32 / 10.0;
-            self.gui_dirty = true;
-            let r =  create_rocks(1, self.player.pos, 400.0, 1500.0);
-            self.rocks.extend(r);
+        if should_restart {
+            self.restart_game(ctx);
         }
+    }
+/*
+    fn create_rocks(num: i32, exclusion: Point2, min_radius: f32, max_radius: f32) -> Vec<Actor> {
+        assert!(max_radius > min_radius);
+        let new_rock = |_| {
+        {
+            t mut rock = create_rock();
+            let angle = rand::random::<f32>() * 0.35 * std::f32::consts::PI + 180.0;
+            let x_pos = rand::random::<f32>() * (max_radius - min_radius) + min_radius;
+            rock.pos = exclusion + vec_from_angle(r_angle) * r_distance;
+            rock.velocity = random_vec(MAX_ROCK_VEL);
+            rock   
+        }
+        
+        };
+        (0..num).map(new_rock).collect()
+    }
+*/
+    fn spawn_rocks(&mut self, delta: f32) {
+        let loops = (delta / 0.004).round() as i32;
+
+        let time_mult = self.curr_time * self.difficulty_mult;
+
+        let spawnpercent =  time_mult / 1600.0 + 0.01;
+        let speed_mod = f32::powf(time_mult * 4.0, 0.85) + 100.0;
+        let mut max_angle = time_mult / 240.0;
+
+        if max_angle > 0.5 {
+            max_angle = 0.5;
+        }
+
+        for _ in 0..loops {
+            if rand::random::<f32>() < spawnpercent {
+                let mut rock = create_rock();
+
+                let mut angle = rand::random::<f32>() * max_angle;
+                if rand::random::<bool>() {
+                    angle = -angle;
+                }
+                let x_pos = (rand::random::<f32>() * self.screen_width as f32) - self.screen_width as f32 / 2.0;
+                let y_pos = (self.screen_height as f32) / 2.0 - 15.0;
+
+                let speed = rand::random::<f32>() * speed_mod + speed_mod / 2.0;
+                
+                rock.pos = Point2::new(x_pos, y_pos);
+                rock.velocity = vec_from_angle(std::f32::consts::PI + angle) * (speed);
+                
+                self.rocks.push(rock);
+            }
+        }
+        
     }
 
     fn update_ui(&mut self, ctx: &mut Context) {
         let score_str = format!("Score: {}", self.score);
         let score_text = graphics::Text::new(ctx, &score_str, &self.assets.font).unwrap();
 
+        let level_str = format!("Time: {}", get_level_time(ctx, self));
+        let level_text = graphics::Text::new(ctx, &level_str, &self.assets.font).unwrap();
+
         self.score_display = score_text;
+        self.level_display = level_text;
     }
 }
 
@@ -482,8 +558,8 @@ impl EventHandler for MainState {
         while timer::check_update_time(ctx, DESIRED_FPS) {
             let seconds = 1.0 / (DESIRED_FPS as f32);
             
-            self.respawn_time -= seconds;
-
+            self.curr_time = get_level_time(ctx, self);
+            
             // Update the player state based on the user input.
             player_handle_input(&mut self.player, &self.input, seconds);
             self.player_shot_timeout -= seconds;
@@ -503,33 +579,33 @@ impl EventHandler for MainState {
             // Then the shots...
             for act in &mut self.shots {
                 update_actor_position(act, seconds);
-                wrap_actor_position(act, self.screen_width as f32, self.screen_height as f32);
+
+                if is_out_of_bounds(act, self.screen_width as f32, self.screen_height as f32) {
+                    act.life = 0.0;
+                }
                 handle_timed_life(act, seconds);
             }
 
             // And finally the rocks.
             for act in &mut self.rocks {
                 update_actor_position(act, seconds);
-                wrap_actor_position(act, self.screen_width as f32, self.screen_height as f32);
+                if is_out_of_bounds(act, self.screen_width as f32, self.screen_height as f32) {
+                    act.life = 0.0;
+                }
             }
 
             // Handle the results of things moving:
             // collision detection, object death, and if
             // we have killed all the rocks in the level,
             // spawn more of them.
-            self.handle_collisions();
+            self.handle_collisions(ctx);
 
             self.clear_dead_stuff();
 
-            self.check_for_level_respawn();
+            self.spawn_rocks(seconds);
 
-            // Using a gui_dirty flag here is a little
-            // messy but fine here.
-            if self.gui_dirty {
-                self.update_ui(ctx);
-                self.gui_dirty = false;
-            }
-
+            self.update_ui(ctx);
+            
             // Finally we check for our end state.
             // I want to have a nice death screen eventually,
             // but for now we just quit.
