@@ -9,7 +9,7 @@
             "type": "cppvsdbg",
             "request": "launch",
             "program": "cargo",
-            "args": ["run", "--release"],
+            "args": ["run", "--release", "--", "2.5"],
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}",
             "environment": [],

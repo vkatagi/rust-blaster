@@ -377,6 +377,10 @@ impl NetFromServer {
         for shot in &state.shots {
             actors.push(shot.clone());
         }
+
+        for actor in &mut actors {
+            actor.pre_serialize();
+        }
         
         NetFromServer {
             actors: actors,
@@ -393,7 +397,8 @@ impl NetFromServer {
         state.rocks.clear();
         state.shots.clear();
         
-        for actor in self.actors {
+        for mut actor in self.actors {
+            actor.post_deserialize();
             match actor.tag {
                 ActorType::Player => state.players.push(create_player_from_actor(actor)),
                 ActorType::Rock => state.rocks.push(actor),
@@ -507,7 +512,11 @@ impl MainState {
     fn restart_game(&mut self, ctx: &ggez::Context) {
         println!("GAME OVER: Time: {:?} | Score: {:?} | On Difficulty: {:?}", self.curr_time, self.score, self.difficulty_mult);
 
-     
+        self.local_input = InputState::default();
+        for p in &mut self.players {
+            p.last_shot_at = 0.0;
+            p.input = InputState::default();
+        }
         self.score = 0;
         self.start_time = ggez::timer::get_time_since_start(ctx);
         for shot in &mut self.shots {
@@ -605,78 +614,58 @@ impl MainState {
         self.play_sounds = PlaySounds::default();
     }
 
-    fn s_update(&mut self, ctx: &mut Context) -> GameResult<()> {
-        const DESIRED_FPS: u32 = 144;
-        
-        self.clear_sounds();
-        while timer::check_update_time(ctx, DESIRED_FPS) {
-            let seconds = 1.0 / (DESIRED_FPS as f32);
-            
-            self.curr_time = get_level_time(ctx, self);
+    fn real_update_server(&mut self, ctx: &mut Context, seconds: f32) -> GameResult<()> {
 
-            if !self.is_server() {
-                break;
+        self.players[0].input = self.local_input.clone();
+   
+        for player_obj in &mut self.players {
+            player_handle_input(&mut player_obj.actor, &player_obj.input, seconds);
+        }
+    
+        for player_obj in &mut self.players {
+            let input = &player_obj.input;
+            if input.fire && player_obj.last_shot_at <= self.curr_time - PLAYER_SHOT_TIME {
+                player_obj.last_shot_at = self.curr_time;
+                MainState::fire_player_shot(&mut self.shots, player_obj);
+                self.play_sounds.play_shot = true;
             }
-
-            self.players[0].input = self.local_input.clone();
-        
-            for player_obj in &mut self.players {
-                player_handle_input(&mut player_obj.actor, &player_obj.input, seconds);
-            }
-        
-            for player_obj in &mut self.players {
-                let input = &player_obj.input;
-                if input.fire && player_obj.last_shot_at <= self.curr_time - PLAYER_SHOT_TIME {
-                    player_obj.last_shot_at = self.curr_time;
-                    MainState::fire_player_shot(&mut self.shots, player_obj);
-                    self.play_sounds.play_shot = true;
-                }
-            }
-
-            // Update the physics for all actors.
-            // First the player...
-            for player_obj in &mut self.players {
-                let player = &mut player_obj.actor;
-                update_actor_position(player, seconds);
-
-                wrap_actor_position(
-                    player,
-                    self.screen_width as f32,
-                    self.screen_height as f32,
-                );
-            }
-            
-            // Then the shots...
-            for act in &mut self.shots {
-                update_actor_position(act, seconds);
-
-                if is_out_of_bounds(act, self.screen_width as f32, self.screen_height as f32) {
-                    act.life = 0.0;
-                }
-                handle_timed_life(act, seconds);
-            }
-
-            // And finally the rocks.
-            for act in &mut self.rocks {
-                update_actor_position(act, seconds);
-                if is_out_of_bounds(act, self.screen_width as f32, self.screen_height as f32) {
-                    act.life = 0.0;
-                }
-            }
-
-            // Handle the results of things moving:
-            // collision detection, object death, and if
-            // we have killed all the rocks in the level,
-            // spawn more of them.
-            self.handle_collisions(ctx);
-
-            self.clear_dead_stuff();
-
-            self.spawn_rocks(seconds);
-
-            self.update_ui(ctx);
         }
 
+        // Update the physics for all actors.
+        // First the player...
+        for player_obj in &mut self.players {
+            let player = &mut player_obj.actor;
+            update_actor_position(player, seconds);
+
+            wrap_actor_position(
+                player,
+                self.screen_width as f32,
+                self.screen_height as f32,
+            );
+        }
+        
+        // Then the shots...
+        for act in &mut self.shots {
+            update_actor_position(act, seconds);
+
+            if is_out_of_bounds(act, self.screen_width as f32, self.screen_height as f32) {
+                act.life = 0.0;
+            }
+            handle_timed_life(act, seconds);
+        }
+
+        // And finally the rocks.
+        for act in &mut self.rocks {
+            update_actor_position(act, seconds);
+            if is_out_of_bounds(act, self.screen_width as f32, self.screen_height as f32) {
+                act.life = 0.0;
+            }
+        }
+
+        self.handle_collisions(ctx);
+        self.clear_dead_stuff();
+        self.spawn_rocks(seconds);
+        self.update_ui(ctx);
         Ok(())
     }
 
@@ -833,7 +822,21 @@ impl EventHandler for StatePtr {
         self.state.lock().unwrap().s_draw(ctx)
     }
     fn update(&mut self, ctx: &mut Context) -> GameResult<()> {
-        self.state.lock().unwrap().s_update(ctx)
+        let mut locked_state = self.state.lock().unwrap();          
+
+        if !locked_state.is_server() {
+            return Ok(())
+        }
+        const DESIRED_FPS: u32 = 144;
+        
+        while timer::check_update_time(ctx, DESIRED_FPS) {
+            let seconds = 1.0 / (DESIRED_FPS as f32);
+
+            locked_state.curr_time = get_level_time(ctx, &locked_state);
+            locked_state.real_update_server(ctx, seconds)?;
+        }
+
+        Ok(())
     }
 
     fn key_down_event(&mut self, ctx: &mut Context, keycode: Keycode, _keymod: Mod, _repeat: bool) {
@@ -846,28 +849,6 @@ impl EventHandler for StatePtr {
 }
 
 /// **********************************************************************
-/// Now we implement the `EventHandler` trait from `ggez::event`, which provides
-/// ggez with callbacks for updating and drawing our game, as well as
-/// handling input events.
-/// **********************************************************************
-impl EventHandler for MainState {
-    fn key_down_event(&mut self, ctx: &mut Context, keycode: Keycode, _keymod: Mod, _repeat: bool) {
-        self.s_key_down_event(ctx, keycode, _keymod, _repeat)
-    }
-
-    fn key_up_event(&mut self, _ctx: &mut Context, keycode: Keycode, _keymod: Mod, _repeat: bool) {
-        self.s_key_up_event(_ctx, keycode, _keymod, _repeat)
-    }
-
-    fn draw(&mut self, ctx: &mut Context) -> GameResult<()> {
-        self.s_draw(ctx)
-    }
-    fn update(&mut self, ctx: &mut Context) -> GameResult<()> {
-        self.s_update(ctx) 
-    }
-}
-
-/// **********************************************************************
 /// Finally our main function!  Which merely sets up a config and calls
 /// `ggez::event::run()` with our `EventHandler` type.
 /// **********************************************************************
@@ -875,7 +856,7 @@ impl EventHandler for MainState {
 pub fn main() {
     let mut cb = ContextBuilder::new("rust-blaster", "katagis")
         .window_setup(conf::WindowSetup::default().title("Rust Blaster!"))
-        .window_mode(conf::WindowMode::default().dimensions(1920, 1080));
+        .window_mode(conf::WindowMode::default().dimensions(1080, 1080));
 
     cb = cb.add_resource_path(path::PathBuf::from("resources"));
 
@@ -901,15 +882,131 @@ pub fn main() {
     }
 }
 
-
-
 ///
-/// Networking Threads
+/// Networking Thread
 /// 
 
-fn network_main(state: &mut StatePtr) { 
-    for _ in 0..19999 {
-        std::thread::sleep(std::time::Duration::from_secs(2));
-        state.state.lock().unwrap().score += 1000;
+fn network_main(stateptr: &mut StatePtr) { 
+    let mut is_server = false;
+
+    let args: std::vec::Vec<String> = env::args().collect();
+    if args.len() > 1 {
+        is_server = true;
     }
+    let is_server = is_server;
+
+    if !is_server {
+        client_main(stateptr).expect("Client thread paniced.");
+    } else {
+        server_main(stateptr).expect("Server thread paniced.");
+    }
+
+    
+}
+
+
+use std::net::{TcpListener, TcpStream};
+use std::io::prelude::*;
+
+fn client_main(stateptr: &mut StatePtr) -> std::io::Result<()> {
+    println!("Client!");
+    {
+        let mut state = stateptr.state.lock().unwrap();
+        state.local_player_index = 1;
+    }
+    
+    let mut stream = TcpStream::connect("localhost:9942")?;
+
+    loop {
+            std::thread::sleep_ms(4);
+
+            // Read from server
+            let mut json_read = String::new();
+            println!("Client waiting for data!");
+            stream.read_to_string(&mut json_read)?;
+            let net_struct: NetFromServer = serde_json::from_str(&json_read)?;
+            
+
+            let input_data;
+            {
+                let mut state = stateptr.state.lock().unwrap();
+                net_struct.update_main_state(&mut state);
+                input_data = state.local_input.clone();
+            }
+
+            // Send input to server
+            let mut json_send = serde_json::to_string(&input_data)?;
+
+            unsafe {
+                stream.write(json_send.as_mut_vec())?;
+            }
+    }
+
+    Ok(())
+}
+
+fn server_sender(mut stream: TcpStream, stateptr: StatePtr) -> std::io::Result<()> {
+    {
+        stateptr.state.lock().unwrap().players.push(create_player());
+    }
+
+    loop {
+        std::thread::sleep_ms(4);
+
+
+        let mut net_struct;
+        // Update the client
+        {
+            let state = stateptr.state.lock().unwrap();
+            net_struct = NetFromServer::make_from_state(&state);
+        }
+
+        let mut json_send = serde_json::to_string(&net_struct)?;
+
+        unsafe {
+            stream.write(json_send.as_mut_vec())?;
+        }
+    }
+}
+
+fn server_recver(mut stream: TcpStream, stateptr: StatePtr) -> std::io::Result<()> {
+    loop {
+        let mut json_read = String::new();
+        println!("Server waiting for input!");
+        stream.read_to_string(&mut json_read)?;
+        let input_data: InputState = serde_json::from_str(&json_read)?;
+
+        {
+            let mut state = stateptr.state.lock().unwrap();
+            state.players[1].input = input_data;
+        }
+    }
+}
+
+fn server_main(stateptr: &mut StatePtr) -> std::io::Result<()> {
+    let send_lstener = TcpListener::bind("localhost:9942")?;
+    let recv_listener = TcpListener::bind("localhost:9949")?;
+
+    println!("Server!");
+    println!("Listening for connections.");
+    
+    let mut ptr = stateptr.get_ref();
+    std::thread::spawn(move || {
+        for listen_result in send_lstener.incoming() {
+            let this_listen_ref = ptr.get_ref();
+            let stream = listen_result.expect("Server Sender Thread Failed.");
+            server_sender(stream, this_listen_ref).expect("Server Sender Thread Failed.");
+        }
+    });
+
+    let mut ptr = stateptr.get_ref();
+    std::thread::spawn(move || {
+        for listen_result in recv_listener.incoming() {
+            let this_listen_ref = ptr.get_ref();
+            let stream = listen_result.expect("Server Recv Thread Failed.");
+            server_recver(stream, this_listen_ref).expect("Server Recv Thread Failed.");
+        }
+    });  
+
+    Ok(())
 }
