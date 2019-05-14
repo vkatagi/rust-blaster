@@ -73,18 +73,6 @@ struct ActorSerialIntermediate {
     pub vel: Vec2Serial,
 }
 
-impl ActorSerialIntermediate {
-    fn pre_serialize(&mut self, actor: &Actor) {
-        self.pos = Vec2Serial::from_floats(actor.pos.x, actor.pos.y);
-        self.vel = Vec2Serial::from_floats(actor.velocity.x, actor.velocity.y);
-    }
-
-    fn post_deserialize(&self, actor: &mut Actor) {
-        actor.pos = Vector2::new(self.pos.x, self.pos.y);
-        actor.velocity = Vector2::new(self.vel.x, self.vel.y);
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Actor {
     tag: ActorType,
@@ -396,7 +384,10 @@ impl NetFromServer {
         state.players.clear();
         state.rocks.clear();
         state.shots.clear();
-        
+
+        //state.play_sounds = self.play_sounds;
+                    //self.clear_sounds();
+
         for mut actor in self.actors {
             actor.post_deserialize();
             match actor.tag {
@@ -554,6 +545,18 @@ impl MainState {
             self.play_sounds.play_hit = true;
         }
     }
+    
+    fn client_handle_sounds(&mut self, ctx: &ggez::Context) {
+        for rock in &mut self.rocks {
+            for shot in &mut self.shots {
+                let distance = shot.pos - rock.pos;
+                if distance.norm() < (shot.bbox_size + rock.bbox_size) {
+                    self.play_sounds.play_hit = true;
+                    return
+                }
+            }
+        }
+    }
 
     fn spawn_rocks(&mut self, delta: f32) {
         let loops = (delta / 0.004).round() as i32;
@@ -604,13 +607,16 @@ impl MainState {
         self.level_display = level_text;
     }
 
-    fn play_sounds(&self) {/*
-        if self.play_sounds.play_hit && !self.assets.hit_sound.playing() {
-            let _ = self.assets.hit_sound.play();
+    fn play_sounds(&mut self) {
+        if !self.is_server() {
+            if self.play_sounds.play_hit && !self.assets.hit_sound.playing() {
+                let _ = self.assets.hit_sound.play();
+            }
+            if self.play_sounds.play_shot && !self.assets.shot_sound.playing() {
+                let _ = self.assets.shot_sound.play();
+            }
         }
-        if self.play_sounds.play_shot && !self.assets.shot_sound.playing() {
-            let _ = self.assets.shot_sound.play();
-        }*/
+        self.clear_sounds();
     }
 
     fn clear_sounds(&mut self) {
@@ -618,7 +624,6 @@ impl MainState {
     }
 
     fn real_update_server(&mut self, ctx: &mut Context, seconds: f32) -> GameResult<()> {
-
         self.players[0].input = self.local_input.clone();
    
         for player_obj in &mut self.players {
@@ -684,6 +689,14 @@ impl MainState {
             player_handle_input(&mut player_obj.actor, &player_obj.input, seconds);
         }
     
+        for player_obj in &mut self.players {
+            let input = &player_obj.input;
+            if input.fire && player_obj.last_shot_at <= self.curr_time - PLAYER_SHOT_TIME {
+                player_obj.last_shot_at = self.curr_time;
+                self.play_sounds.play_shot = true;
+            }
+        }
+
         // Update the physics for all actors.
         // First the player...
         for player_obj in &mut self.players {
@@ -707,6 +720,7 @@ impl MainState {
             update_actor_position(act, seconds);
         }
 
+        self.client_handle_sounds(ctx);
         self.update_ui(ctx);
         Ok(())
     }
@@ -910,10 +924,6 @@ pub fn main() {
 
     let ctx = &mut cb.build().unwrap();
     
-    // No threads
-    // let mut game = MainState::new(ctx);
-    // let result = event::run(ctx, &mut game);
-    
     let mut game_ptr = StatePtr::new(ctx);
 
     let mut net_ptr = game_ptr.get_ref();
@@ -999,7 +1009,7 @@ fn recv_update<T: DeserializeOwned>(stream: &mut TcpStream, function: impl Fn(T)
                 }
             }
         },
-        Err(x) => {  }
+        Err(_) => { }
     }
 }
 
@@ -1061,8 +1071,11 @@ fn server_sender(mut stream: TcpStream, stateptr: StatePtr) {
 
 fn server_recver(mut stream: TcpStream, stateptr: StatePtr) -> std::io::Result<()> {
     configure_stream(&mut stream);
+    let player_index;
     {
-        stateptr.state.lock().unwrap().players.push(create_player());
+        let mut state = stateptr.state.lock().unwrap();
+        state.players.push(create_player());
+        player_index = state.players.len() - 1;
     }
     
     loop {
@@ -1071,7 +1084,7 @@ fn server_recver(mut stream: TcpStream, stateptr: StatePtr) -> std::io::Result<(
         recv_update(&mut stream, |data: InputState| {
             match stateptr.state.lock() {
                 Ok(ref mut state) => {
-                    state.players[1].input = data;
+                    state.players[player_index].input = data;
                 },
                 Err(_) => {},
             }
@@ -1091,6 +1104,7 @@ fn server_main(stateptr: &mut StatePtr) -> std::io::Result<()> {
         for listen_result in send_lstener.incoming() {
             let this_listen_ref = ptr.get_ref();
             let stream = listen_result.expect("Server Sender Thread Failed.");
+            println!("Client Connected: {:?}", stream.peer_addr());
             server_sender(stream, this_listen_ref);
         }
     });
