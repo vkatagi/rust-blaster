@@ -591,8 +591,11 @@ impl MainState {
     }
 
     fn update_ui(&mut self, ctx: &mut Context) {
-        let score_str = format!("Score: {}", self.score);
+        let str = if self.is_server() { "Server" } else { "Client" };
+
+        let score_str = format!("Score: {}  {}", self.score, str);
         let score_text = graphics::Text::new(ctx, &score_str, &self.assets.font).unwrap();
+
 
         let level_str = format!("Time: {}", get_level_time(ctx, self));
         let level_text = graphics::Text::new(ctx, &level_str, &self.assets.font).unwrap();
@@ -601,13 +604,13 @@ impl MainState {
         self.level_display = level_text;
     }
 
-    fn play_sounds(&self) {
+    fn play_sounds(&self) {/*
         if self.play_sounds.play_hit && !self.assets.hit_sound.playing() {
             let _ = self.assets.hit_sound.play();
         }
         if self.play_sounds.play_shot && !self.assets.shot_sound.playing() {
             let _ = self.assets.shot_sound.play();
-        }
+        }*/
     }
 
     fn clear_sounds(&mut self) {
@@ -669,6 +672,45 @@ impl MainState {
         Ok(())
     }
 
+    /// Perform interpolation & "prediction"
+    fn real_update_client(&mut self, ctx: &mut Context, seconds: f32) -> GameResult<()> {
+
+        if self.players.len() > self.local_player_index as usize {
+            self.players[self.local_player_index as usize].input = self.local_input.clone();
+        }
+        
+   
+        for player_obj in &mut self.players {
+            player_handle_input(&mut player_obj.actor, &player_obj.input, seconds);
+        }
+    
+        // Update the physics for all actors.
+        // First the player...
+        for player_obj in &mut self.players {
+            let player = &mut player_obj.actor;
+            update_actor_position(player, seconds);
+
+            wrap_actor_position(
+                player,
+                self.screen_width as f32,
+                self.screen_height as f32,
+            );
+        }
+        
+        // Then the shots...
+        for act in &mut self.shots {
+            update_actor_position(act, seconds);
+        }
+
+        // And finally the rocks.
+        for act in &mut self.rocks {
+            update_actor_position(act, seconds);
+        }
+
+        self.update_ui(ctx);
+        Ok(())
+    }
+
     fn s_draw(&mut self, ctx: &mut Context) -> GameResult<()> {
         // Our drawing is quite simple.
         // Just clear the screen...
@@ -698,8 +740,6 @@ impl MainState {
         graphics::draw(ctx, &self.level_display, level_dest, 0.0)?;
         graphics::draw(ctx, &self.score_display, score_dest, 0.0)?;
 
-        // Then we flip the screen...
-        graphics::present(ctx);
 
         // Play our sound queue
         self.play_sounds();
@@ -710,7 +750,6 @@ impl MainState {
         // This ideally prevents the game from using 100% CPU all the time
         // even if vsync is off.
         // The actual behavior can be a little platform-specific.
-        timer::yield_now();
         Ok(())
     }
 
@@ -819,21 +858,30 @@ impl StatePtr {
 
 impl EventHandler for StatePtr {
     fn draw(&mut self, ctx: &mut Context) -> GameResult<()> {
-        self.state.lock().unwrap().s_draw(ctx)
-    }
-    fn update(&mut self, ctx: &mut Context) -> GameResult<()> {
-        let mut locked_state = self.state.lock().unwrap();          
+        let r = self.state.lock().unwrap().s_draw(ctx);
+        graphics::present(ctx);
 
-        if !locked_state.is_server() {
-            return Ok(())
-        }
+        thread::sleep(Duration::from_micros(500));
+        r
+    }
+
+    fn update(&mut self, ctx: &mut Context) -> GameResult<()> {
+
         const DESIRED_FPS: u32 = 144;
         
         while timer::check_update_time(ctx, DESIRED_FPS) {
             let seconds = 1.0 / (DESIRED_FPS as f32);
 
-            locked_state.curr_time = get_level_time(ctx, &locked_state);
-            locked_state.real_update_server(ctx, seconds)?;
+            let mut locked_state = self.state.lock().unwrap();          
+
+            if locked_state.is_server() {
+                locked_state.curr_time = get_level_time(ctx, &locked_state);
+                locked_state.real_update_server(ctx, seconds)?;
+            }
+            else {
+                locked_state.curr_time += seconds;
+                locked_state.real_update_client(ctx, seconds)?;
+            }
         }
 
         Ok(())
@@ -905,81 +953,129 @@ fn network_main(stateptr: &mut StatePtr) {
 }
 
 
+
 use std::net::{TcpListener, TcpStream};
 use std::io::prelude::*;
+use std::io::BufReader;
+use serde::de::DeserializeOwned;
+use std::time::Duration;
+
+const TRANSFER_RATE: Duration = Duration::from_millis(16);
+const TIMEOUT: Option<Duration> = Some(Duration::from_millis(50));
+const PACKET_TTL: u32 = 1;
+const NONBLOCKING: bool = false;
+const EOP: u8 = 28;
+const NODELAY: bool = true;
+
+#[allow(unused_must_use)]
+fn configure_stream(stream :&mut TcpStream) {
+    stream.set_nodelay(NODELAY);
+    stream.set_read_timeout(TIMEOUT);
+    stream.set_write_timeout(TIMEOUT);
+    stream.set_ttl(PACKET_TTL);
+    stream.set_nonblocking(NONBLOCKING);
+}
+
+/// Attempts to send the struct in the stream.
+fn send_struct<T: Serialize>(stream :&mut TcpStream, data: T) {
+    let mut json_send = serde_json::to_vec(&data).expect("Failed to serialize.");
+    json_send.push(EOP);
+    stream.write_all(&json_send[..]).expect("Write for send_struct Failed.");
+}
+
+/// Runs the given Function with the Deserialized struct. 
+/// Intended to edit a mutable state capture.
+fn recv_update<T: DeserializeOwned>(stream: &mut TcpStream, function: impl Fn(T)) {
+    let mut read_buf = BufReader::new(stream);
+    let mut json_vec = Vec::new();
+    match read_buf.read_until(EOP, &mut json_vec) {
+        Ok(_) => {
+            let input_data: Result<T, _> = serde_json::from_slice(&json_vec[..json_vec.len()-1]);
+
+            match input_data {
+                Ok(data) => function(data),
+                Err(_) => {
+                    recv_update(read_buf.get_mut(), function);
+                }
+            }
+        },
+        Err(x) => {  }
+    }
+}
 
 fn client_main(stateptr: &mut StatePtr) -> std::io::Result<()> {
-    println!("Client!");
+    let mut recv_stream = TcpStream::connect("localhost:9942")?;
+    let mut send_stream = TcpStream::connect("localhost:9949")?;
+
+    configure_stream(&mut recv_stream);
+    configure_stream(&mut send_stream);
+
     {
-        let mut state = stateptr.state.lock().unwrap();
-        state.local_player_index = 1;
+        stateptr.state.lock().unwrap().local_player_index = 1;
     }
-    
-    let mut stream = TcpStream::connect("localhost:9942")?;
+    println!("Client connecting!");
 
-    loop {
-            std::thread::sleep_ms(4);
+    let ptr = stateptr.get_ref();
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(TRANSFER_RATE);
 
-            // Read from server
-            let mut json_read = String::new();
-            println!("Client waiting for data!");
-            stream.read_to_string(&mut json_read)?;
-            let net_struct: NetFromServer = serde_json::from_str(&json_read)?;
-            
+            recv_update(&mut recv_stream, |data: NetFromServer| {
+                let mut state = ptr.state.lock().unwrap();
+                data.update_main_state(&mut state);
+            });
+        }
+    });
+
+    let ptr = stateptr.get_ref();
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(TRANSFER_RATE);
 
             let input_data;
             {
-                let mut state = stateptr.state.lock().unwrap();
-                net_struct.update_main_state(&mut state);
+                let state = ptr.state.lock().unwrap();
                 input_data = state.local_input.clone();
             }
 
-            // Send input to server
-            let mut json_send = serde_json::to_string(&input_data)?;
-
-            unsafe {
-                stream.write(json_send.as_mut_vec())?;
-            }
-    }
-
+            send_struct(&mut send_stream, input_data);
+        }
+    });  
     Ok(())
 }
 
-fn server_sender(mut stream: TcpStream, stateptr: StatePtr) -> std::io::Result<()> {
-    {
-        stateptr.state.lock().unwrap().players.push(create_player());
-    }
+fn server_sender(mut stream: TcpStream, stateptr: StatePtr) {
+    configure_stream(&mut stream);
 
     loop {
-        std::thread::sleep_ms(4);
-
+        std::thread::sleep(TRANSFER_RATE);
 
         let mut net_struct;
-        // Update the client
         {
             let state = stateptr.state.lock().unwrap();
             net_struct = NetFromServer::make_from_state(&state);
         }
-
-        let mut json_send = serde_json::to_string(&net_struct)?;
-
-        unsafe {
-            stream.write(json_send.as_mut_vec())?;
-        }
+        send_struct(&mut stream, net_struct);
     }
 }
 
 fn server_recver(mut stream: TcpStream, stateptr: StatePtr) -> std::io::Result<()> {
+    configure_stream(&mut stream);
+    {
+        stateptr.state.lock().unwrap().players.push(create_player());
+    }
+    
     loop {
-        let mut json_read = String::new();
-        println!("Server waiting for input!");
-        stream.read_to_string(&mut json_read)?;
-        let input_data: InputState = serde_json::from_str(&json_read)?;
-
-        {
-            let mut state = stateptr.state.lock().unwrap();
-            state.players[1].input = input_data;
-        }
+        std::thread::sleep(TRANSFER_RATE);
+        
+        recv_update(&mut stream, |data: InputState| {
+            match stateptr.state.lock() {
+                Ok(ref mut state) => {
+                    state.players[1].input = data;
+                },
+                Err(_) => {},
+            }
+        });
     }
 }
 
@@ -995,7 +1091,7 @@ fn server_main(stateptr: &mut StatePtr) -> std::io::Result<()> {
         for listen_result in send_lstener.incoming() {
             let this_listen_ref = ptr.get_ref();
             let stream = listen_result.expect("Server Sender Thread Failed.");
-            server_sender(stream, this_listen_ref).expect("Server Sender Thread Failed.");
+            server_sender(stream, this_listen_ref);
         }
     });
 
