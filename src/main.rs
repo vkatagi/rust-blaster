@@ -608,13 +608,11 @@ impl MainState {
     }
 
     fn play_sounds(&mut self) {
-        if !self.is_server() {
-            if self.play_sounds.play_hit && !self.assets.hit_sound.playing() {
-                let _ = self.assets.hit_sound.play();
-            }
-            if self.play_sounds.play_shot && !self.assets.shot_sound.playing() {
-                let _ = self.assets.shot_sound.play();
-            }
+        if self.play_sounds.play_hit && !self.assets.hit_sound.playing() {
+            let _ = self.assets.hit_sound.play();
+        }
+        if self.play_sounds.play_shot && !self.assets.shot_sound.playing() {
+            let _ = self.assets.shot_sound.play();
         }
         self.clear_sounds();
     }
@@ -947,14 +945,14 @@ pub fn main() {
 fn network_main(stateptr: &mut StatePtr) { 
     let mut is_server = false;
 
-    let args: std::vec::Vec<String> = env::args().collect();
-    if args.len() > 1 {
+    let mut args: std::vec::Vec<String> = env::args().collect();
+    if args.len() <= 2 {
         is_server = true;
     }
     let is_server = is_server;
 
     if !is_server {
-        client_main(stateptr).expect("Client thread paniced.");
+        client_main(stateptr, &mut args[2]).expect("Client thread paniced.");
     } else {
         server_main(stateptr).expect("Server thread paniced.");
     }
@@ -1013,9 +1011,10 @@ fn recv_update<T: DeserializeOwned>(stream: &mut TcpStream, function: impl Fn(T)
     }
 }
 
-fn client_main(stateptr: &mut StatePtr) -> std::io::Result<()> {
-    let mut recv_stream = TcpStream::connect("localhost:9942")?;
-    let mut send_stream = TcpStream::connect("localhost:9949")?;
+fn client_main(stateptr: &mut StatePtr, server_addres: &mut String) -> std::io::Result<()> {
+    
+    let mut recv_stream = TcpStream::connect(format!("{}:9942", server_addres))?;
+    let mut send_stream = TcpStream::connect(format!("{}:9949", server_addres))?;
 
     configure_stream(&mut recv_stream);
     configure_stream(&mut send_stream);
