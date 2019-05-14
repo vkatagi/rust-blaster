@@ -4,22 +4,36 @@ extern crate ggez;
 
 extern crate rand;
 
-use ggez::audio;
+use ggez::graphics;
 use ggez::conf;
 use ggez::event::{self, EventHandler, Keycode, Mod};
-use ggez::graphics;
-use ggez::graphics::{Point2, Vector2};
-use ggez::nalgebra as na;
+use ggez::graphics::{Vector2, Point2};
 use ggez::timer;
 use ggez::{Context, ContextBuilder, GameResult};
 
 use std::env;
 use std::path;
 
-use serde::{Deserialize, Serialize};
+
 
 use std::thread;
 use std::sync::{Mutex, Arc};
+
+mod structs;
+
+use structs::Actor;
+use structs::Player;
+use structs::PlaySounds;
+use structs::InputState;
+use structs::ActorType;
+use structs::Assets;
+
+const PLAYER_SPEED: f32 = 500.0;
+const PLAYER_SHOT_TIME: f32 = 0.2;
+const SHOT_SPEED: f32 = 1100.0;
+
+use serde::{Deserialize, Serialize};
+
 
 /// *********************************************************************
 /// Basic stuff, make some helpers for vector functions.
@@ -35,230 +49,7 @@ fn vec_from_angle(angle: f32) -> Vector2 {
     Vector2::new(vx, vy)
 }
 
-/// *********************************************************************
-/// Now we define our Actor's.
-/// An Actor is anything in the game world.
-/// We're not *quite* making a real entity-component system but it's
-/// pretty close.  For a more complicated game you would want a
-/// real ECS, but for this it's enough to say that all our game objects
-/// contain pretty much the same data.
-/// **********************************************************************
-#[derive(Debug, Clone, Serialize, Deserialize)]
-enum ActorType {
-    Player,
-    Rock,
-    Shot,
-}
 
-// Serialization for our non serializable types.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-struct Vec2Serial {
-    pub x: f32,
-    pub y: f32,
-}
-
-impl Vec2Serial {
-    fn from_floats(x: f32, y: f32) -> Vec2Serial {
-        Vec2Serial {
-            x,
-            y,
-        }
-    }
-}
-
-// Serialization for our non serializable types.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-struct ActorSerialIntermediate {
-    pub pos: Vec2Serial,
-    pub vel: Vec2Serial,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct Actor {
-    tag: ActorType,
-    
-    #[serde(skip, default = "na::zero")]
-    pos: Vector2,
-    facing: f32,
-
-    #[serde(skip, default = "na::zero")]
-    velocity: Vector2,
-    ang_vel: f32,
-    bbox_size: f32,
-
-    // I am going to lazily overload "life" with a
-    // double meaning:
-    // for shots, it is the time left to live,
-    // for players and rocks, it is the actual hit points.
-    life: f32,
-
-    serial_interm: ActorSerialIntermediate,
-}
-
-impl Actor {
-    fn pre_serialize(&mut self) {
-        self.serial_interm.pos = Vec2Serial::from_floats(self.pos.x, self.pos.y);
-        self.serial_interm.vel = Vec2Serial::from_floats(self.velocity.x, self.velocity.y);
-    }
-
-    fn post_deserialize(&mut self) {
-        self.pos = Vector2::new(self.serial_interm.pos.x, self.serial_interm.pos.y);
-        self.velocity = Vector2::new(self.serial_interm.vel.x, self.serial_interm.vel.y);  
-    }
-}
-
-#[derive(Debug)]
-struct Player {
-    actor: Actor,
-    input: InputState,
-    last_shot_at: f32
-}
-
-const PLAYER_LIFE: f32 = 1.0;
-const SHOT_LIFE: f32 = 2.0;
-const ROCK_LIFE: f32 = 1.0;
-
-const PLAYER_BBOX: f32 = 12.0;
-const ROCK_BBOX: f32 = 12.0;
-const SHOT_BBOX: f32 = 6.0;
-
-/// *********************************************************************
-/// Now we have some constructor functions for different game objects.
-/// **********************************************************************
-
-fn create_player_actor() -> Actor {
-    Actor {
-        tag: ActorType::Player,
-        pos: na::zero(),
-        facing: 0.,
-        velocity: na::zero(),
-        ang_vel: 0.,
-        bbox_size: PLAYER_BBOX,
-        life: PLAYER_LIFE,
-        serial_interm: ActorSerialIntermediate::default(),
-    }
-}
-
-fn create_player() -> Player {
-    create_player_from_actor(create_player_actor())
-}
-
-fn create_player_from_actor(actor: Actor) -> Player {
-    Player {
-        actor: actor,
-        input: InputState::default(),
-        last_shot_at: 0.0,
-    }
-}
-
-
-fn create_rock() -> Actor {
-    Actor {
-        tag: ActorType::Rock,
-        pos: na::zero(),
-        facing: 0.,
-        velocity: na::zero(),
-        ang_vel: 0.,
-        bbox_size: ROCK_BBOX,
-        life: ROCK_LIFE,
-        serial_interm: ActorSerialIntermediate::default(),
-    }
-}
-
-fn create_shot() -> Actor {
-    Actor {
-        tag: ActorType::Shot,
-        pos: na::zero(),
-        facing: 0.,
-        velocity: na::zero(),
-        ang_vel: SHOT_ANG_VEL,
-        bbox_size: SHOT_BBOX,
-        life: SHOT_LIFE,
-        serial_interm: ActorSerialIntermediate::default(),
-    }
-}
-/// *********************************************************************
-/// Now we make functions to handle physics.  We do simple Newtonian
-/// physics (so we do have inertia), and cap the max speed so that we
-/// don't have to worry too much about small objects clipping through
-/// each other.
-///
-/// Our unit of world space is simply pixels, though we do transform
-/// the coordinate system so that +y is up and -y is down.
-/// **********************************************************************
-
-const SHOT_SPEED: f32 = 1100.0;
-const SHOT_ANG_VEL: f32 = 0.1;
-
-const PLAYER_SPEED: f32 = 500.0;
-
-// Seconds between shots
-const PLAYER_SHOT_TIME: f32 = 0.2;
-
-fn player_handle_input(actor: &mut Actor, input: &InputState, dt: f32) {
-    //actor.facing += dt * PLAYER_TURN_RATE * input.xaxis;
-    fn bool_to_f(v: bool) -> f32 {
-        if v {
-            return 1.0;
-        }
-        return 0.0;
-    }
-
-    let point = Vector2::new(
-        bool_to_f(input.right) * 1.0
-      + bool_to_f(input.left) * -1.0
-      , 
-        bool_to_f(input.up) * 1.0
-      + bool_to_f(input.down) * -1.0
-    );
-
-    actor.pos += point * dt * PLAYER_SPEED;
-}
-
-const MAX_PHYSICS_VEL: f32 = 950.0;
-
-fn update_actor_position(actor: &mut Actor, dt: f32) {
-    // Clamp the velocity to the max efficiently
-    let norm_sq = actor.velocity.norm_squared();
-    if norm_sq > MAX_PHYSICS_VEL.powi(2) {
-        actor.velocity = actor.velocity / norm_sq.sqrt() * MAX_PHYSICS_VEL;
-    }
-    let dv = actor.velocity * (dt);
-    actor.pos += dv;
-    actor.facing += actor.ang_vel;
-}
-
-/// Takes an actor and wraps its position to the bounds of the
-/// screen, so if it goes off the left side of the screen it
-/// will re-enter on the right side and so on.
-fn wrap_actor_position(actor: &mut Actor, sx: f32, sy: f32) {
-    let screen_x_bounds = sx / 2.0;
-    let screen_y_bounds = sy / 2.0;
-    if actor.pos.x > screen_x_bounds {
-        actor.pos.x -= sx;
-    } else if actor.pos.x < -screen_x_bounds {
-        actor.pos.x += sx;
-    };
-    if actor.pos.y > screen_y_bounds {
-        actor.pos.y -= sy;
-    } else if actor.pos.y < -screen_y_bounds {
-        actor.pos.y += sy;
-    }
-}
-
-fn is_out_of_bounds(actor: &mut Actor, sx: f32, sy: f32) -> bool {
-    let screen_x_bounds = sx / 2.0;
-    let screen_y_bounds = sy / 2.0;
-
-    actor.pos.x > screen_x_bounds 
-        || actor.pos.x < -screen_x_bounds 
-        || actor.pos.y > screen_y_bounds
-        || actor.pos.y < -screen_y_bounds
-}    
-
-fn handle_timed_life(actor: &mut Actor, dt: f32) {
-    actor.life -= dt;
-}
 
 /// Translates the world coordinate system, which
 /// has Y pointing up and the origin at the center,
@@ -272,132 +63,8 @@ fn world_to_screen_coords(screen_width: u32, screen_height: u32, point: Point2) 
     Point2::new(x, y)
 }
 
-/// **********************************************************************
-/// So that was the real meat of our game.  Now we just need a structure
-/// to contain the images, sounds, etc. that we need to hang on to; this
-/// is our "asset management system".  All the file names and such are
-/// just hard-coded.
-/// **********************************************************************
-
-struct Assets {
-    player_image: graphics::Image,
-    shot_image: graphics::Image,
-    rock_image: graphics::Image,
-    font: graphics::Font,
-    shot_sound: audio::Source,
-    hit_sound: audio::Source,
-}
-
-impl Assets {
-    fn new(ctx: &mut Context) -> GameResult<Assets> {
-        let player_image = graphics::Image::new(ctx, "/player.png")?;
-        let shot_image = graphics::Image::new(ctx, "/shot.png")?;
-        let rock_image = graphics::Image::new(ctx, "/rock.png")?;
-        let font = graphics::Font::new(ctx, "/DejaVuSerif.ttf", 18)?;
-
-        let shot_sound = audio::Source::new(ctx, "/pew.ogg")?;
-        let hit_sound = audio::Source::new(ctx, "/boom.ogg")?;
-        Ok(Assets {
-            player_image,
-            shot_image,
-            rock_image,
-            font,
-            shot_sound,
-            hit_sound,
-        })
-    }
-
-    fn actor_image(&mut self, actor: &Actor) -> &mut graphics::Image {
-        match actor.tag {
-            ActorType::Player => &mut self.player_image,
-            ActorType::Rock => &mut self.rock_image,
-            ActorType::Shot => &mut self.shot_image,
-        }
-    }
-}
-
-/// **********************************************************************
-/// The `InputState` is exactly what it sounds like, it just keeps track of
-/// the user's input state so that we turn keyboard events into something
-/// state-based and device-independent.
-/// **********************************************************************
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-struct InputState {
-    fire: bool,
-    up: bool,
-    down: bool,
-    right: bool,
-    left: bool
-}
 
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
-struct PlaySounds {
-    play_hit: bool,
-    play_shot: bool,
-}
-
-///
-/// Networking struct that the client receives from the server.
-///
-/// 
-
-#[derive(Debug, Serialize, Deserialize)]
-struct NetFromServer {
-    actors: Vec<Actor>,
-    score: i32,
-    time_offset: f32,
-    play_sounds: PlaySounds,
-}
-
-impl NetFromServer {
-    fn make_from_state(state: &MainState) -> NetFromServer {
-        let mut actors = Vec::new();
-
-        for player in &state.players {
-            actors.push(player.actor.clone());
-        }
-
-        for rock in &state.rocks {
-            actors.push(rock.clone());
-        }
-
-        for shot in &state.shots {
-            actors.push(shot.clone());
-        }
-
-        for actor in &mut actors {
-            actor.pre_serialize();
-        }
-        
-        NetFromServer {
-            actors: actors,
-            score: state.score,
-            time_offset: state.curr_time,
-            play_sounds: state.play_sounds.clone()
-        }
-    }
-
-    fn update_main_state(self, state: &mut MainState) {
-        state.score = self.score;
-
-        state.players.clear();
-        state.rocks.clear();
-        state.shots.clear();
-
-        //state.play_sounds = self.play_sounds;
-                    //self.clear_sounds();
-
-        for mut actor in self.actors {
-            actor.post_deserialize();
-            match actor.tag {
-                ActorType::Player => state.players.push(create_player_from_actor(actor)),
-                ActorType::Rock => state.rocks.push(actor),
-                ActorType::Shot => state.shots.push(actor),
-            }
-        }
-    }
-}
 
 /// **********************************************************************
 /// Now we're getting into the actual game loop.  The `MainState` is our
@@ -444,7 +111,7 @@ impl MainState {
         let mut players = Vec::new();
         let rocks = Vec::new();
 
-        players.push(create_player());
+        players.push(Player::create());
 
         let args: std::vec::Vec<String> = env::args().collect();
         let mut diff_mult = 1.0;
@@ -484,7 +151,7 @@ impl MainState {
     fn fire_player_shot(shots_ref: &mut Vec<Actor>, player: &Player) {
         let player_actor = &player.actor;
         for i in -1..2 {
-            let mut shot = create_shot();
+            let mut shot = Actor::create_shot();
             shot.pos = player_actor.pos;
             shot.facing = player_actor.facing;
             let direction = vec_from_angle(shot.facing);
@@ -573,7 +240,7 @@ impl MainState {
 
         for _ in 0..loops {
             if rand::random::<f32>() < spawnpercent {
-                let mut rock = create_rock();
+                let mut rock = Actor::create_rock();
 
                 let mut angle = rand::random::<f32>() * max_angle;
                 if rand::random::<bool>() {
@@ -1073,7 +740,7 @@ fn server_recver(mut stream: TcpStream, stateptr: StatePtr) -> std::io::Result<(
     let player_index;
     {
         let mut state = stateptr.state.lock().unwrap();
-        state.players.push(create_player());
+        state.players.push(Player::create());
         player_index = state.players.len() - 1;
     }
     
