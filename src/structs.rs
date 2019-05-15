@@ -118,7 +118,6 @@ impl NetFromServer {
         state.shots.clear();
 
         for mut actor in self.actors {
-            
             actor.post_deserialize();
             
             match actor.tag {

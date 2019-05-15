@@ -12,11 +12,9 @@ use std::time::{Duration, Instant};
 use serde::{Serialize, Deserialize};
 use serde::de::DeserializeOwned;
 
-
 use std::path::Path;
 use std::fs::File;
 
-const EOP: u8 = 28;
 const NET_FILENAME: &str = "net_setup.json";
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -108,33 +106,23 @@ pub fn network_main(stateptr: &mut StatePtr) {
 
 /// Attempts to send the struct in the stream.
 fn send_struct<T: Serialize>(stream: &mut TcpStream, data: T) -> usize {
-    let mut json_send = serde_json::to_vec(&data).expect("Failed to serialize.");
-    json_send.push(EOP);
-    let _ = stream.write_all(&json_send[..]);
-    json_send.len()
+    let bin = bincode::serialize(&data).expect("Failed to serialize.");
+    let _ = stream.write_all(&bin[..]);
+    bin.len()
 }
 
 
 /// Runs the given Function with the Deserialized struct. 
 /// Intended to edit a mutable state capture.
 fn recv_update<T: DeserializeOwned>(stream: &mut TcpStream, function: impl Fn(T)) {
-    let mut read_buf = BufReader::new(stream);
-    let mut json_vec = Vec::new();
-    match read_buf.read_until(EOP, &mut json_vec) {
-        Ok(_) => {
-            if json_vec.len() == 0 {
-                return
-            }
-            let input_data: Result<T, _> = serde_json::from_slice(&json_vec[..json_vec.len()-1]);
-
-            match input_data {
-                Ok(data) => function(data),
-                Err(_) => {
-                    recv_update(read_buf.get_mut(), function);
-                }
-            }
-        },
-        Err(_) => { }
+    let read_buf = BufReader::new(stream.try_clone().expect("Failed to clone stream."));
+    
+    let data = bincode::deserialize_from::<_, T>(read_buf);
+    if let Ok(data) = data {
+        function(data);
+    }
+    else {
+        recv_update(stream, function);
     }
 }
 

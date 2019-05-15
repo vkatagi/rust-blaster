@@ -43,21 +43,53 @@ pub struct ActorSerialIntermediate {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Actor {
     pub tag: ActorType,
-    
+
+    pub facing: f32,
+
+    serial_interm: ActorSerialIntermediate,
+
     #[serde(skip, default = "na::zero")]
     pub pos: Vector2,
-    pub facing: f32,
 
     #[serde(skip, default = "na::zero")]
     pub velocity: Vector2,
+
+    #[serde(skip, default)]
     pub ang_vel: f32,
+
+    #[serde(skip, default)]
     pub bbox_size: f32,
 
+    #[serde(skip, default)]
     pub kill: bool,
-    serial_interm: ActorSerialIntermediate,
 }
 
+const PLAYER_BBOX: f32 = 12.0;
+const ROCK_BBOX: f32 = 12.0;
+const SHOT_BBOX: f32 = 6.0;
+
+const SHOT_ANG_VEL: f32 = 0.5;
+const MAX_PHYSICS_VEL: f32 = 950.0;
+
+
 impl Actor {
+    
+    pub fn post_deserialize_defaults(&mut self) {
+        match self.tag {
+            ActorType::Player => {
+                self.bbox_size = PLAYER_BBOX;
+            }
+            ActorType::Rock => {
+                self.bbox_size = ROCK_BBOX;
+                self.ang_vel = 0.01;
+            }
+            ActorType::Shot => {
+                self.bbox_size = SHOT_BBOX;
+                self.ang_vel = SHOT_ANG_VEL;
+            }
+        }
+    }
+
     pub fn pre_serialize(&mut self) {
         self.serial_interm.pos = Vec2Serial::from_floats(self.pos.x, self.pos.y);
         self.serial_interm.vel = Vec2Serial::from_floats(self.velocity.x, self.velocity.y);
@@ -66,29 +98,16 @@ impl Actor {
     pub fn post_deserialize(&mut self) {
         self.pos = Vector2::new(self.serial_interm.pos.x, self.serial_interm.pos.y);
         self.velocity = Vector2::new(self.serial_interm.vel.x, self.serial_interm.vel.y);  
+        self.post_deserialize_defaults();
     }
-}
 
-const PLAYER_BBOX: f32 = 12.0;
-const ROCK_BBOX: f32 = 12.0;
-const SHOT_BBOX: f32 = 6.0;
-
-const SHOT_ANG_VEL: f32 = 0.1;
-const MAX_PHYSICS_VEL: f32 = 950.0;
-
-
-/// *********************************************************************
-/// Now we have some constructor functions for different game objects.
-/// **********************************************************************
-
-impl Actor {
     pub fn create_player_actor() -> Actor {
         Actor {
             tag: ActorType::Player,
             pos: na::zero(),
-            facing: 0.,
+            facing: 0.0,
             velocity: na::zero(),
-            ang_vel: 0.,
+            ang_vel: 0.0,
             bbox_size: PLAYER_BBOX,
             kill: false,
             serial_interm: ActorSerialIntermediate::default(),
