@@ -19,20 +19,24 @@ use std::path;
 use std::thread;
 use std::sync::{Mutex, Arc};
 
+mod actor;
 mod structs;
 
-use structs::Actor;
+use actor::Actor;
+
+
+
 use structs::Player;
 use structs::PlaySounds;
 use structs::InputState;
-use structs::ActorType;
 use structs::Assets;
+use structs::MainState;
 
-const PLAYER_SPEED: f32 = 500.0;
+
 const PLAYER_SHOT_TIME: f32 = 0.2;
 const SHOT_SPEED: f32 = 1100.0;
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 
 /// *********************************************************************
@@ -77,23 +81,7 @@ fn world_to_screen_coords(screen_width: u32, screen_height: u32, point: Point2) 
 /// this small it hardly matters.
 /// **********************************************************************
 
-struct MainState {
-    local_player_index: i32,
-    local_input: InputState,
-    players: Vec<Player>,
-    shots: Vec<Actor>,
-    rocks: Vec<Actor>,
-    score: i32,
-    assets: Assets,
-    screen_width: u32,
-    screen_height: u32,
-    score_display: graphics::Text,
-    level_display: graphics::Text,
-    start_time: std::time::Duration,
-    curr_time: f32,
-    difficulty_mult: f32,
-    play_sounds: PlaySounds,
-}
+
 
 impl MainState {
     fn new(ctx: &mut Context) -> MainState {
@@ -163,8 +151,8 @@ impl MainState {
     }
 
     fn clear_dead_stuff(&mut self) {
-        self.shots.retain(|s| s.life > 0.0);
-        self.rocks.retain(|r| r.life > 0.0);
+        self.shots.retain(|s| !s.kill);
+        self.rocks.retain(|r| !r.kill);
     }
 
     fn restart_game(&mut self, ctx: &ggez::Context) {
@@ -178,10 +166,10 @@ impl MainState {
         self.score = 0;
         self.start_time = ggez::timer::get_time_since_start(ctx);
         for shot in &mut self.shots {
-            shot.life = 0.0;
+            shot.kill = true;
         }
         for rock in &mut self.rocks {
-            rock.life = 0.0;
+            rock.kill = true;
         }
     }
 
@@ -200,8 +188,8 @@ impl MainState {
             for shot in &mut self.shots {
                 let distance = shot.pos - rock.pos;
                 if distance.norm() < (shot.bbox_size + rock.bbox_size) {
-                    shot.life = 0.0;
-                    rock.life = 0.0;
+                    shot.kill = true;
+                    rock.kill = true;
                     self.score += 1;
                     self.play_sounds.play_hit = true;
                 }
@@ -213,7 +201,7 @@ impl MainState {
         }
     }
     
-    fn client_handle_sounds(&mut self, ctx: &ggez::Context) {
+    fn client_handle_sounds(&mut self, _ctx: &ggez::Context) {
         for rock in &mut self.rocks {
             for shot in &mut self.shots {
                 let distance = shot.pos - rock.pos;
@@ -292,7 +280,7 @@ impl MainState {
         self.players[0].input = self.local_input.clone();
    
         for player_obj in &mut self.players {
-            player_handle_input(&mut player_obj.actor, &player_obj.input, seconds);
+            player_obj.tick_input(seconds);
         }
     
         for player_obj in &mut self.players {
@@ -308,30 +296,26 @@ impl MainState {
         // First the player...
         for player_obj in &mut self.players {
             let player = &mut player_obj.actor;
-            update_actor_position(player, seconds);
-
-            wrap_actor_position(
-                player,
-                self.screen_width as f32,
-                self.screen_height as f32,
-            );
+            player.tick_physics(seconds);
+            
+            player.wrap_position(self.screen_width as f32, self.screen_height as f32);
         }
         
         // Then the shots...
-        for act in &mut self.shots {
-            update_actor_position(act, seconds);
+        for shot in &mut self.shots {
+            shot.tick_physics(seconds);
 
-            if is_out_of_bounds(act, self.screen_width as f32, self.screen_height as f32) {
-                act.life = 0.0;
+            if shot.is_out_of_bounds(self.screen_width as f32, self.screen_height as f32) {
+                shot.kill = true;
             }
-            handle_timed_life(act, seconds);
         }
 
         // And finally the rocks.
-        for act in &mut self.rocks {
-            update_actor_position(act, seconds);
-            if is_out_of_bounds(act, self.screen_width as f32, self.screen_height as f32) {
-                act.life = 0.0;
+        for rock in &mut self.rocks {
+            rock.tick_physics(seconds);
+
+            if rock.is_out_of_bounds(self.screen_width as f32, self.screen_height as f32) {
+                rock.kill = true;
             }
         }
 
@@ -350,8 +334,8 @@ impl MainState {
         }
         
    
-        for player_obj in &mut self.players {
-            player_handle_input(&mut player_obj.actor, &player_obj.input, seconds);
+        for player in &mut self.players {
+            player.tick_input(seconds);
         }
     
         for player_obj in &mut self.players {
@@ -366,23 +350,20 @@ impl MainState {
         // First the player...
         for player_obj in &mut self.players {
             let player = &mut player_obj.actor;
-            update_actor_position(player, seconds);
+            player.tick_physics(seconds);
 
-            wrap_actor_position(
-                player,
-                self.screen_width as f32,
-                self.screen_height as f32,
-            );
+            
+            player.wrap_position(self.screen_width as f32, self.screen_height as f32);
         }
         
         // Then the shots...
-        for act in &mut self.shots {
-            update_actor_position(act, seconds);
+        for shot in &mut self.shots {
+            shot.tick_physics(seconds);
         }
 
         // And finally the rocks.
-        for act in &mut self.rocks {
-            update_actor_position(act, seconds);
+        for rock in &mut self.rocks {
+            rock.tick_physics(seconds);
         }
 
         self.client_handle_sounds(ctx);
@@ -701,7 +682,7 @@ fn client_main(stateptr: &mut StatePtr, server_addres: &mut String) -> std::io::
         loop {
             std::thread::sleep(TRANSFER_RATE);
 
-            recv_update(&mut recv_stream, |data: NetFromServer| {
+            recv_update(&mut recv_stream, |data: structs::NetFromServer| {
                 let mut state = ptr.state.lock().unwrap();
                 data.update_main_state(&mut state);
             });
@@ -734,7 +715,7 @@ fn server_sender(mut stream: TcpStream, stateptr: StatePtr) {
         let mut net_struct;
         {
             let state = stateptr.state.lock().unwrap();
-            net_struct = NetFromServer::make_from_state(&state);
+            net_struct = structs::NetFromServer::make_from_state(&state);
         }
         send_struct(&mut stream, net_struct);
     }
