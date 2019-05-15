@@ -968,9 +968,9 @@ use std::io::BufReader;
 use serde::de::DeserializeOwned;
 use std::time::Duration;
 
-const TRANSFER_RATE: Duration = Duration::from_millis(16);
-const TIMEOUT: Option<Duration> = Some(Duration::from_millis(50));
-const PACKET_TTL: u32 = 1;
+const TRANSFER_RATE: Duration = Duration::from_millis(50);
+const TIMEOUT: Option<Duration> = Some(Duration::from_millis(1000));
+const PACKET_TTL: u32 = 60;
 const NONBLOCKING: bool = false;
 const EOP: u8 = 28;
 const NODELAY: bool = true;
@@ -988,7 +988,8 @@ fn configure_stream(stream :&mut TcpStream) {
 fn send_struct<T: Serialize>(stream :&mut TcpStream, data: T) {
     let mut json_send = serde_json::to_vec(&data).expect("Failed to serialize.");
     json_send.push(EOP);
-    stream.write_all(&json_send[..]).expect("Write for send_struct Failed.");
+    let _ = stream.write_all(&json_send[..]);
+    //println!("{:?}", json_send);
 }
 
 /// Runs the given Function with the Deserialized struct. 
@@ -998,6 +999,9 @@ fn recv_update<T: DeserializeOwned>(stream: &mut TcpStream, function: impl Fn(T)
     let mut json_vec = Vec::new();
     match read_buf.read_until(EOP, &mut json_vec) {
         Ok(_) => {
+            if json_vec.len() == 0 {
+                return
+            }
             let input_data: Result<T, _> = serde_json::from_slice(&json_vec[..json_vec.len()-1]);
 
             match input_data {
@@ -1026,6 +1030,7 @@ fn client_main(stateptr: &mut StatePtr, server_addres: &mut String) -> std::io::
 
     let ptr = stateptr.get_ref();
     std::thread::spawn(move || {
+        println!("Recv thread.");
         loop {
             std::thread::sleep(TRANSFER_RATE);
 
@@ -1092,8 +1097,8 @@ fn server_recver(mut stream: TcpStream, stateptr: StatePtr) -> std::io::Result<(
 }
 
 fn server_main(stateptr: &mut StatePtr) -> std::io::Result<()> {
-    let send_lstener = TcpListener::bind("localhost:9942")?;
-    let recv_listener = TcpListener::bind("localhost:9949")?;
+    let send_lstener = TcpListener::bind("0.0.0.0:9942")?;
+    let recv_listener = TcpListener::bind("0.0.0.0:9949")?;
 
     println!("Server!");
     println!("Listening for connections.");
