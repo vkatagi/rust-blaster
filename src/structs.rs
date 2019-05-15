@@ -9,6 +9,8 @@ use ggez::{Context, GameResult};
 use crate::actor;
 use actor::Actor;
 
+use std::sync::{Mutex, Arc};
+
 
 const PLAYER_SPEED: f32 = 500.0;
 
@@ -193,4 +195,22 @@ pub struct MainState {
     pub curr_time: f32,
     pub difficulty_mult: f32,
     pub play_sounds: PlaySounds,
+}
+
+pub struct StatePtr {
+    pub state: Arc<Mutex<MainState>>
+}
+
+impl StatePtr {
+    pub fn new(ctx: &mut Context) -> StatePtr {
+        StatePtr {
+            state: Arc::new(Mutex::new(MainState::new(ctx))),
+        }
+    }
+
+    pub fn get_ref(&mut self) -> StatePtr {
+        StatePtr {
+            state: self.state.clone()
+        }
+    }
 }

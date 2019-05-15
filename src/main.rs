@@ -15,28 +15,17 @@ use std::env;
 use std::path;
 
 
-
-use std::thread;
-use std::sync::{Mutex, Arc};
-
 mod actor;
 mod structs;
+mod networking;
 
 use actor::Actor;
-
-
-
-use structs::Player;
-use structs::PlaySounds;
-use structs::InputState;
-use structs::Assets;
-use structs::MainState;
-
+use structs::*;
 
 const PLAYER_SHOT_TIME: f32 = 0.2;
 const SHOT_SPEED: f32 = 1100.0;
 
-use serde::Serialize;
+use std::time::Duration;
 
 
 /// *********************************************************************
@@ -472,32 +461,13 @@ fn draw_actor(
     graphics::draw_ex(ctx, image, drawparams)
 }
 
-
-struct StatePtr {
-    state: Arc<Mutex<MainState>>
-}
-
-impl StatePtr {
-    fn new(ctx: &mut Context) -> StatePtr {
-        StatePtr {
-            state: Arc::new(Mutex::new(MainState::new(ctx))),
-        }
-    }
-
-    fn get_ref(&mut self) -> StatePtr {
-        StatePtr {
-            state: self.state.clone()
-        }
-    }
-}
-
 impl EventHandler for StatePtr {
     fn draw(&mut self, ctx: &mut Context) -> GameResult<()> {
         graphics::clear(ctx);
         let r = self.state.lock().unwrap().s_draw(ctx);
         graphics::present(ctx);
 
-        thread::sleep(Duration::from_micros(500));
+        std::thread::sleep(Duration::from_micros(500));
         r
     }
 
@@ -549,8 +519,8 @@ pub fn main() {
     let mut game_ptr = StatePtr::new(ctx);
 
     let mut net_ptr = game_ptr.get_ref();
-    thread::spawn(move || {
-        network_main(&mut net_ptr);
+    std::thread::spawn(move || {
+        networking::network_main(&mut net_ptr);
     });
 
     let result = event::run(ctx, &mut game_ptr);
@@ -560,191 +530,4 @@ pub fn main() {
     } else {
         println!("Game exited cleanly.");
     }
-}
-
-///
-/// Networking Thread
-/// 
-
-fn network_main(stateptr: &mut StatePtr) { 
-    let mut is_server = false;
-
-    let mut args: std::vec::Vec<String> = env::args().collect();
-    if args.len() <= 2 {
-        is_server = true;
-    }
-    let is_server = is_server;
-
-    if !is_server {
-        client_main(stateptr, &mut args[2]).expect("Client thread paniced.");
-    } else {
-        server_main(stateptr).expect("Server thread paniced.");
-    }
-
-    
-}
-
-
-
-use std::net::{TcpListener, TcpStream};
-use std::io::prelude::*;
-use std::io::BufReader;
-use serde::de::DeserializeOwned;
-use std::time::Duration;
-
-const TRANSFER_RATE: Duration = Duration::from_millis(50);
-const TIMEOUT: Option<Duration> = Some(Duration::from_millis(1000));
-const PACKET_TTL: u32 = 60;
-const NONBLOCKING: bool = false;
-const EOP: u8 = 28;
-const NODELAY: bool = true;
-
-#[allow(unused_must_use)]
-fn configure_stream(stream :&mut TcpStream) {
-    stream.set_nodelay(NODELAY);
-    stream.set_read_timeout(TIMEOUT);
-    stream.set_write_timeout(TIMEOUT);
-    stream.set_ttl(PACKET_TTL);
-    stream.set_nonblocking(NONBLOCKING);
-}
-
-/// Attempts to send the struct in the stream.
-fn send_struct<T: Serialize>(stream :&mut TcpStream, data: T) {
-    let mut json_send = serde_json::to_vec(&data).expect("Failed to serialize.");
-    json_send.push(EOP);
-    let _ = stream.write_all(&json_send[..]);
-    //println!("{:?}", json_send);
-}
-
-/// Runs the given Function with the Deserialized struct. 
-/// Intended to edit a mutable state capture.
-fn recv_update<T: DeserializeOwned>(stream: &mut TcpStream, function: impl Fn(T)) {
-    let mut read_buf = BufReader::new(stream);
-    let mut json_vec = Vec::new();
-    match read_buf.read_until(EOP, &mut json_vec) {
-        Ok(_) => {
-            if json_vec.len() == 0 {
-                return
-            }
-            let input_data: Result<T, _> = serde_json::from_slice(&json_vec[..json_vec.len()-1]);
-
-            match input_data {
-                Ok(data) => function(data),
-                Err(_) => {
-                    recv_update(read_buf.get_mut(), function);
-                }
-            }
-        },
-        Err(_) => { }
-    }
-}
-
-fn client_main(stateptr: &mut StatePtr, server_addres: &mut String) -> std::io::Result<()> {
-    
-    let mut recv_stream = TcpStream::connect(format!("{}:9942", server_addres))?;
-    let mut send_stream = TcpStream::connect(format!("{}:9949", server_addres))?;
-
-    configure_stream(&mut recv_stream);
-    configure_stream(&mut send_stream);
-
-    {
-        stateptr.state.lock().unwrap().local_player_index = 1;
-    }
-    println!("Client connecting!");
-
-    let ptr = stateptr.get_ref();
-    std::thread::spawn(move || {
-        println!("Recv thread.");
-        loop {
-            std::thread::sleep(TRANSFER_RATE);
-
-            recv_update(&mut recv_stream, |data: structs::NetFromServer| {
-                let mut state = ptr.state.lock().unwrap();
-                data.update_main_state(&mut state);
-            });
-        }
-    });
-
-    let ptr = stateptr.get_ref();
-    std::thread::spawn(move || {
-        loop {
-            std::thread::sleep(TRANSFER_RATE);
-
-            let input_data;
-            {
-                let state = ptr.state.lock().unwrap();
-                input_data = state.local_input.clone();
-            }
-
-            send_struct(&mut send_stream, input_data);
-        }
-    });  
-    Ok(())
-}
-
-fn server_sender(mut stream: TcpStream, stateptr: StatePtr) {
-    configure_stream(&mut stream);
-
-    loop {
-        std::thread::sleep(TRANSFER_RATE);
-
-        let mut net_struct;
-        {
-            let state = stateptr.state.lock().unwrap();
-            net_struct = structs::NetFromServer::make_from_state(&state);
-        }
-        send_struct(&mut stream, net_struct);
-    }
-}
-
-fn server_recver(mut stream: TcpStream, stateptr: StatePtr) -> std::io::Result<()> {
-    configure_stream(&mut stream);
-    let player_index;
-    {
-        let mut state = stateptr.state.lock().unwrap();
-        state.players.push(Player::create());
-        player_index = state.players.len() - 1;
-    }
-    
-    loop {
-        std::thread::sleep(TRANSFER_RATE);
-        
-        recv_update(&mut stream, |data: InputState| {
-            match stateptr.state.lock() {
-                Ok(ref mut state) => {
-                    state.players[player_index].input = data;
-                },
-                Err(_) => {},
-            }
-        });
-    }
-}
-
-fn server_main(stateptr: &mut StatePtr) -> std::io::Result<()> {
-    let send_lstener = TcpListener::bind("0.0.0.0:9942")?;
-    let recv_listener = TcpListener::bind("0.0.0.0:9949")?;
-
-    println!("Server!");
-    println!("Listening for connections.");
-    
-    let mut ptr = stateptr.get_ref();
-    std::thread::spawn(move || {
-        for listen_result in send_lstener.incoming() {
-            let this_listen_ref = ptr.get_ref();
-            let stream = listen_result.expect("Server Sender Thread Failed.");
-            println!("Client Connected: {:?}", stream.peer_addr());
-            server_sender(stream, this_listen_ref);
-        }
-    });
-
-    let mut ptr = stateptr.get_ref();
-    std::thread::spawn(move || {
-        for listen_result in recv_listener.incoming() {
-            let this_listen_ref = ptr.get_ref();
-            let stream = listen_result.expect("Server Recv Thread Failed.");
-            server_recver(stream, this_listen_ref).expect("Server Recv Thread Failed.");
-        }
-    });  
-
-    Ok(())
 }
