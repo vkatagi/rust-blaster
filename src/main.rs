@@ -276,11 +276,32 @@ impl MainState {
         self.play_sounds = PlaySounds::default();
     }
 
+    fn tick_physics(&mut self, seconds: f32) {
+        // Tick shots
+        for shot in &mut self.shots {
+            shot.tick_physics(seconds);
+
+            if shot.is_out_of_bounds(self.screen_width as f32, self.screen_height as f32) {
+                shot.kill = true;
+            }
+        }
+
+        // Tick rocks
+        for rock in &mut self.rocks {
+            rock.tick_physics(seconds);
+
+            if rock.is_out_of_bounds(self.screen_width as f32, self.screen_height as f32) {
+                rock.kill = true;
+            }
+        }
+    }
+
     fn real_update_server(&mut self, ctx: &mut Context, seconds: f32) -> GameResult<()> {
         self.players[0].input = self.local_input.clone();
    
-        for player_obj in &mut self.players {
-            player_obj.tick_input(seconds);
+        for player in &mut self.players {
+            player.tick_input(seconds);
+            player.actor.wrap_position(self.screen_width as f32, self.screen_height as f32);
         }
     
         for player_obj in &mut self.players {
@@ -292,35 +313,10 @@ impl MainState {
             }
         }
 
-        // Update the physics for all actors.
-        // First the player...
-        for player_obj in &mut self.players {
-            let player = &mut player_obj.actor;
-            player.tick_physics(seconds);
-            
-            player.wrap_position(self.screen_width as f32, self.screen_height as f32);
-        }
-        
-        // Then the shots...
-        for shot in &mut self.shots {
-            shot.tick_physics(seconds);
-
-            if shot.is_out_of_bounds(self.screen_width as f32, self.screen_height as f32) {
-                shot.kill = true;
-            }
-        }
-
-        // And finally the rocks.
-        for rock in &mut self.rocks {
-            rock.tick_physics(seconds);
-
-            if rock.is_out_of_bounds(self.screen_width as f32, self.screen_height as f32) {
-                rock.kill = true;
-            }
-        }
-
+        self.tick_physics(seconds);
         self.handle_collisions(ctx);
         self.clear_dead_stuff();
+
         self.spawn_rocks(seconds);
         self.update_ui(ctx);
         Ok(())
@@ -336,6 +332,7 @@ impl MainState {
    
         for player in &mut self.players {
             player.tick_input(seconds);
+            player.actor.wrap_position(self.screen_width as f32, self.screen_height as f32);
         }
     
         for player_obj in &mut self.players {
@@ -346,35 +343,13 @@ impl MainState {
             }
         }
 
-        // Update the physics for all actors.
-        // First the player...
-        for player_obj in &mut self.players {
-            let player = &mut player_obj.actor;
-            player.tick_physics(seconds);
-
-            
-            player.wrap_position(self.screen_width as f32, self.screen_height as f32);
-        }
-        
-        // Then the shots...
-        for shot in &mut self.shots {
-            shot.tick_physics(seconds);
-        }
-
-        // And finally the rocks.
-        for rock in &mut self.rocks {
-            rock.tick_physics(seconds);
-        }
-
+        self.tick_physics(seconds);
         self.client_handle_sounds(ctx);
         self.update_ui(ctx);
         Ok(())
     }
 
     fn s_draw(&mut self, ctx: &mut Context) -> GameResult<()> {
-        // Our drawing is quite simple.
-        // Just clear the screen...
-        graphics::clear(ctx);
 
         // Loop over all objects drawing them...
         {
@@ -518,6 +493,7 @@ impl StatePtr {
 
 impl EventHandler for StatePtr {
     fn draw(&mut self, ctx: &mut Context) -> GameResult<()> {
+        graphics::clear(ctx);
         let r = self.state.lock().unwrap().s_draw(ctx);
         graphics::present(ctx);
 
