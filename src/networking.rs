@@ -121,9 +121,6 @@ fn recv_update<T: DeserializeOwned>(stream: &mut TcpStream, function: impl Fn(T)
     if let Ok(data) = data {
         function(data);
     }
-    else {
-        recv_update(stream, function);
-    }
 }
 
 fn client_main(stateptr: &mut StatePtr, server_addres: &mut String) -> std::io::Result<()> {
@@ -230,7 +227,8 @@ fn server_main(stateptr: &mut StatePtr) -> std::io::Result<()> {
 
     let mut ptr = stateptr.get_ref();
     let net_copy = net.clone();
-    std::thread::spawn(move || {
+
+    let _ = std::thread::Builder::new().name("server listener sender".into()).spawn(move || {
         let net = net_copy;
         for listen_result in send_lstener.incoming() {
             let this_listen_ref = ptr.get_ref();
@@ -242,7 +240,7 @@ fn server_main(stateptr: &mut StatePtr) -> std::io::Result<()> {
     });
 
     let mut ptr = stateptr.get_ref();
-    std::thread::spawn(move || {
+    let _ = std::thread::Builder::new().name("server listener recver".into()).spawn(move || {
         for listen_result in recv_listener.incoming() {
             let this_listen_ref = ptr.get_ref();
             let mut stream = listen_result.expect("Server Recv Thread Failed.");
