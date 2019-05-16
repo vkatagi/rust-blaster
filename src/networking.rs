@@ -1,7 +1,9 @@
 
-use crate::structs;
-use structs::StatePtr;
-use structs::NetPlayerConnected;
+use crate::game_structs;
+use game_structs::StatePtr;
+
+use crate::net_structs;
+use net_structs::*;
 
 use std::env;
 use std::net::{TcpListener, TcpStream};
@@ -141,7 +143,7 @@ fn spawn_observer_thread(stateptr: &mut StatePtr, server_addres: &mut String, ne
         loop {
             timer = block_for_next(timer, net.transfer_ms);
 
-            recv_update(&mut recv_stream, |data: structs::NetFromServer| {
+            recv_update(&mut recv_stream, |data: NetFromServer| {
                 let mut state = ptr.state.lock().unwrap();
                 data.update_main_state(&mut state);
             });
@@ -150,37 +152,38 @@ fn spawn_observer_thread(stateptr: &mut StatePtr, server_addres: &mut String, ne
     Ok(())
 }
 
-fn client_main(stateptr: &mut StatePtr, server_addres: &mut String, net: NetSetup) -> std::io::Result<()> {
-    
+fn client_sender_thread(ptr: StatePtr, mut send_stream: TcpStream, net: NetSetup) {
 
+    recv_update(&mut send_stream, |x: NetPlayerConnected| {
+        let p_index = x.player_index;
+        ptr.state.lock().unwrap().local_player_index = Some(p_index);
+        println!("Assigned local player id: {}", p_index);
+    });
+
+    let mut timer = Instant::now();    
+    loop {
+        timer = block_for_next(timer, net.transfer_ms);
+
+        let net_data: NetClientInput;
+        {
+            let state = ptr.state.lock().unwrap();
+            net_data = NetClientInput::make_from_state(&state);
+        }
+
+        send_struct(&mut send_stream, net_data);
+    }
+}
+
+fn client_main(stateptr: &mut StatePtr, server_addres: &mut String, net: NetSetup) -> std::io::Result<()> {
     spawn_observer_thread(stateptr, server_addres, &net)?;
 
     let mut send_stream = TcpStream::connect(format!("{}:9949", server_addres))?;
     net.configure_stream(&mut send_stream);
 
-
     let ptr = stateptr.get_ref();
     std::thread::spawn(move || {
-        let mut timer = Instant::now();    
         println!("Client connecting! Transfer rate: {:?}ms", net.transfer_ms);
-
-        recv_update(&mut send_stream, |x: NetPlayerConnected| {
-            let p_index = x.player_index;
-            ptr.state.lock().unwrap().local_player_index = Some(p_index);
-            println!("Assigned local player id: {}", p_index);
-        });
-
-        loop {
-            timer = block_for_next(timer, net.transfer_ms);
-
-            let input_data;
-            {
-                let state = ptr.state.lock().unwrap();
-                input_data = state.local_input.clone();
-            }
-
-            send_struct(&mut send_stream, input_data);
-        }
+        client_sender_thread(ptr, send_stream, net);
     });  
     Ok(())
 }
@@ -195,7 +198,7 @@ fn server_sender(mut stream: TcpStream, stateptr: StatePtr, transfer_ms: u64) {
         let mut net_struct;
         {
             let state = stateptr.state.lock().unwrap();
-            net_struct = structs::NetFromServer::make_from_state(&state);
+            net_struct = NetFromServer::make_from_state(&state);
         }
         let size = send_struct(&mut stream, net_struct);
 
@@ -220,10 +223,10 @@ fn server_recver(mut stream: TcpStream, stateptr: StatePtr, transfer_ms: u64) ->
     loop {
         timer = block_for_next(timer, transfer_ms);
         
-        recv_update(&mut stream, |data: structs::InputState| {
+        recv_update(&mut stream, |data: net_structs::NetClientInput| {
             match stateptr.state.lock() {
                 Ok(ref mut state) => {
-                    state.players[player_index].input = data;
+                    data.update_main_state(player_index, state);
                 },
                 Err(_) => {},
             }

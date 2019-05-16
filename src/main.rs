@@ -16,11 +16,13 @@ use std::path;
 
 
 mod actor;
-mod structs;
+mod game_structs;
 mod networking;
+mod net_structs;
 
 use actor::Actor;
-use structs::*;
+use game_structs::*;
+
 
 const PLAYER_SHOT_TIME: f32 = 0.2;
 const SHOT_SPEED: f32 = 1100.0;
