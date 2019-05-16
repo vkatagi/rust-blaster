@@ -97,10 +97,15 @@ pub fn network_main(stateptr: &mut StatePtr) {
     }
     let is_server = is_server;
 
-    if !is_server {
-        client_main(stateptr, &mut args[2]).expect("Client thread paniced.");
+    let net = NetSetup::from_file(NET_FILENAME).unwrap_or_else(|_| NetSetup::write_default(NET_FILENAME) );
+
+    if !is_server && args[1].starts_with("s") {
+        stateptr.state.lock().unwrap().local_player_index = None;
+        spawn_observer_thread(stateptr, &mut args[2], &net).expect("Spectator thread paniced.");
+    } else if !is_server {
+        client_main(stateptr, &mut args[2], net).expect("Client thread paniced.");
     } else {
-        server_main(stateptr).expect("Server thread paniced.");
+        server_main(stateptr, net).expect("Server thread paniced.");
     }
 }
 
@@ -123,17 +128,9 @@ fn recv_update<T: DeserializeOwned>(stream: &mut TcpStream, function: impl Fn(T)
     }
 }
 
-fn client_main(stateptr: &mut StatePtr, server_addres: &mut String) -> std::io::Result<()> {
-    
+fn spawn_observer_thread(stateptr: &mut StatePtr, server_addres: &mut String, net: &NetSetup) -> std::io::Result<()> {
     let mut recv_stream = TcpStream::connect(format!("{}:9942", server_addres))?;
-    let mut send_stream = TcpStream::connect(format!("{}:9949", server_addres))?;
-
-    let net = NetSetup::from_file(NET_FILENAME).unwrap_or_else(|_| NetSetup::write_default(NET_FILENAME) );
     net.configure_stream(&mut recv_stream);
-    net.configure_stream(&mut send_stream);
-
-    println!("Client connecting! Transfer rate: {:?}ms", net.transfer_ms);
- 
 
     let ptr = stateptr.get_ref();
     let net_copy = net.clone();
@@ -150,14 +147,26 @@ fn client_main(stateptr: &mut StatePtr, server_addres: &mut String) -> std::io::
             });
         }
     });
+    Ok(())
+}
+
+fn client_main(stateptr: &mut StatePtr, server_addres: &mut String, net: NetSetup) -> std::io::Result<()> {
+    
+
+    spawn_observer_thread(stateptr, server_addres, &net)?;
+
+    let mut send_stream = TcpStream::connect(format!("{}:9949", server_addres))?;
+    net.configure_stream(&mut send_stream);
+
 
     let ptr = stateptr.get_ref();
     std::thread::spawn(move || {
         let mut timer = Instant::now();    
-        
+        println!("Client connecting! Transfer rate: {:?}ms", net.transfer_ms);
+
         recv_update(&mut send_stream, |x: NetPlayerConnected| {
             let p_index = x.player_index;
-            ptr.state.lock().unwrap().local_player_index = p_index;
+            ptr.state.lock().unwrap().local_player_index = Some(p_index);
             println!("Assigned local player id: {}", p_index);
         });
 
@@ -202,6 +211,7 @@ fn server_recver(mut stream: TcpStream, stateptr: StatePtr, transfer_ms: u64) ->
     {
         let mut state = stateptr.state.lock().unwrap();
         player_index = state.add_player();
+        state.difficulty_mult *= 2.0;
     }
     
     send_struct(&mut stream, NetPlayerConnected::make(player_index));
@@ -221,11 +231,9 @@ fn server_recver(mut stream: TcpStream, stateptr: StatePtr, transfer_ms: u64) ->
     }
 }
 
-fn server_main(stateptr: &mut StatePtr) -> std::io::Result<()> {
+fn server_main(stateptr: &mut StatePtr, net: NetSetup) -> std::io::Result<()> {
     let send_lstener = TcpListener::bind("0.0.0.0:9942")?;
     let recv_listener = TcpListener::bind("0.0.0.0:9949")?;
-
-    let net = NetSetup::from_file(NET_FILENAME).unwrap_or_else(|_| NetSetup::write_default(NET_FILENAME));
 
     println!("Server!");
     println!("Listening for connections.... Transfer rate: {:?}ms", net.transfer_ms);
@@ -247,7 +255,8 @@ fn server_main(stateptr: &mut StatePtr) -> std::io::Result<()> {
                 
                 let _ = std::thread::Builder::new().name("server sender".into())
                     .spawn(move || {
-                        println!("Client Connected: {:?}", stream.peer_addr());
+                        this_listen_ref.state.lock().unwrap().connections += 1;
+                        println!("Client/Spectator Connected: {:?}", stream.peer_addr());
                         server_sender(stream, this_listen_ref, transfer_ms);
                     });
             }
@@ -264,7 +273,6 @@ fn server_main(stateptr: &mut StatePtr) -> std::io::Result<()> {
             let transfer_ms = net.transfer_ms;
             let _ = std::thread::Builder::new().name("server sender".into())
                 .spawn(move || {
-                    this_listen_ref.state.lock().unwrap().connections += 1;
                     server_recver(stream, this_listen_ref, transfer_ms).expect("Server Recv Thread Failed.");
                 });
         }

@@ -153,7 +153,7 @@ impl NetFromServer {
         let mut remote_list = self.players;
 
         for i in (0..remote_list.len()).rev() {
-            if state.local_player_index == i {
+            if state.local_player_index == Some(i) {
                 let remote = remote_list.pop().unwrap();
                 state.players[i].actor = remote.actor;
                 state.players[i].actor.post_deserialize();
@@ -227,7 +227,7 @@ impl Assets {
 }
 
 pub struct MainState {
-    pub local_player_index: usize,
+    pub local_player_index: Option<usize>,
     pub local_input: InputState,
     pub players: Vec<Player>,
     pub shots: Vec<Actor>,

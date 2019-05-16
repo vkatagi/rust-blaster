@@ -75,7 +75,7 @@ impl MainState {
         println!("Difficulty Multiplier: {:?}", diff_mult);
 
         let mut s = MainState {
-            local_player_index: 0,
+            local_player_index: Some(0),
             local_input: InputState::default(),
             players: players,
             shots: Vec::new(),
@@ -99,7 +99,7 @@ impl MainState {
     }
 
     fn is_server(&self) -> bool {
-        self.local_player_index == 0
+        self.local_player_index == Some(0)
     }
 
     fn add_player(&mut self) -> usize {
@@ -157,7 +157,7 @@ impl MainState {
         }
     }
 
-    fn handle_collisions(&mut self, ctx: &ggez::Context) {
+    fn handle_collisions(&mut self, _ctx: &ggez::Context) {
         let mut should_restart = false;
         for rock in &mut self.rocks {
 
@@ -233,11 +233,18 @@ impl MainState {
     }
 
     fn update_ui(&mut self, ctx: &mut Context) {
-        let str = if self.is_server() { 
-                format!("Server | Players: {} | Specators: {}", self.players.len(), self.connections + 1 - (self.players.len()  as u32)) 
-            } else { 
-                format!("Client | Player Id: {}", self.local_player_index)
+        let str = match self.local_player_index {
+                Some(0) => { 
+                    format!("Server | Players: {} | Specators: {}", self.players.len(), self.connections + 1 - (self.players.len()  as u32)) 
+                }
+                Some(x) => {
+                    format!("Client | Player Id: {}", x)
+                }
+                None => {
+                    format!("Specator")
+                }
             };
+                
 
         let score_str = format!("Score: {}  {}", self.score, str);
         let score_text = graphics::Text::new(ctx, &score_str, &self.assets.font).unwrap();
@@ -285,8 +292,10 @@ impl MainState {
     }
 
     fn update_player_inputs(&mut self, seconds: f32) {
-        if self.players.len() > self.local_player_index as usize {
-            self.players[self.local_player_index as usize].input = self.local_input.clone();
+        if let Some(index) = self.local_player_index {
+            if self.players.len() > index as usize {
+                self.players[index as usize].input = self.local_input.clone();
+            }
         }
 
         for player in &mut self.players {
