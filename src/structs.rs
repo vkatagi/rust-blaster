@@ -14,10 +14,13 @@ use std::sync::{Mutex, Arc};
 
 const PLAYER_SPEED: f32 = 500.0;
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Player {
     pub actor: Actor,
     pub input: InputState,
+    pub index: u32,
+
+    #[serde(skip)]
     pub last_shot_at: f32
 }
 
@@ -31,6 +34,7 @@ impl Player {
             actor: actor,
             input: InputState::default(),
             last_shot_at: 0.0,
+            index: 0
         }
     }
     
@@ -69,6 +73,22 @@ pub struct InputState {
     pub left: bool
 }
 
+/// New Player "handsake". 
+/// Server sends this struct to the player that connects.
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct NetPlayerConnected {
+    pub player_index: usize
+}
+impl NetPlayerConnected {
+    pub fn make(player_index: usize) -> NetPlayerConnected {
+        NetPlayerConnected {
+            player_index: player_index
+        }
+    }
+}
+
+
 ///
 /// Networking struct that the client receives from the server.
 ///
@@ -76,18 +96,21 @@ pub struct InputState {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct NetFromServer {
+    players: Vec<Player>,
     actors: Vec<Actor>,
     score: i32,
-    time_offset: f32,
-    play_sounds: PlaySounds,
+    server_time: f32,
 }
 
 impl NetFromServer {
     pub fn make_from_state(state: &MainState) -> NetFromServer {
         let mut actors = Vec::new();
+        let mut players = Vec::new();
 
         for player in &state.players {
-            actors.push(player.actor.clone());
+            let mut player_clone = player.clone();
+            player_clone.actor.pre_serialize();
+            players.push(player_clone);
         }
 
         for rock in &state.rocks {
@@ -103,33 +126,58 @@ impl NetFromServer {
         }
         
         NetFromServer {
+            players: players,
             actors: actors,
             score: state.score,
-            time_offset: state.curr_time,
-            play_sounds: state.play_sounds.clone()
+            server_time: state.curr_time,
         }
     }
 
     pub fn update_main_state(self, state: &mut MainState) {
         state.score = self.score;
 
-        state.players.clear();
         state.rocks.clear();
         state.shots.clear();
+
+
+        let time_diff = state.curr_time - self.server_time;
+
+        state.curr_time = self.server_time;
+
+        // for now it is safe to assume all the indexes will be correct, 
+        // it is impossible to 'delete' players currently.
+        while self.players.len() > state.players.len() {
+            state.add_player();
+        }
+
+        let mut remote_list = self.players;
+
+        for i in (0..remote_list.len()).rev() {
+            if state.local_player_index == i {
+                let remote = remote_list.pop().unwrap();
+                state.players[i].actor = remote.actor;
+                state.players[i].actor.post_deserialize();
+                state.players[i].last_shot_at -= time_diff;
+
+            } else {
+                state.players[i] = remote_list.pop().unwrap();
+                state.players[i].actor.post_deserialize();
+                state.players[i].last_shot_at -= time_diff;
+            }
+        }
+
 
         for mut actor in self.actors {
             actor.post_deserialize();
             
             match actor.tag {
-                actor::ActorType::Player => state.players.push(Player::from_actor(actor)),
+                actor::ActorType::Player => {},
                 actor::ActorType::Rock => state.rocks.push(actor),
                 actor::ActorType::Shot => state.shots.push(actor),
             }
         }
     }
 }
-
-
 
 // TODO: refactor
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -179,7 +227,7 @@ impl Assets {
 }
 
 pub struct MainState {
-    pub local_player_index: i32,
+    pub local_player_index: usize,
     pub local_input: InputState,
     pub players: Vec<Player>,
     pub shots: Vec<Actor>,
@@ -190,7 +238,7 @@ pub struct MainState {
     pub screen_height: u32,
     pub score_display: graphics::Text,
     pub level_display: graphics::Text,
-    pub start_time: std::time::Duration,
+    pub start_time: std::time::Instant,
     pub curr_time: f32,
     pub difficulty_mult: f32,
     pub play_sounds: PlaySounds,

@@ -56,22 +56,6 @@ fn world_to_screen_coords(screen_width: u32, screen_height: u32, point: Point2) 
     Point2::new(x, y)
 }
 
-
-
-
-/// **********************************************************************
-/// Now we're getting into the actual game loop.  The `MainState` is our
-/// game's "global" state, it keeps track of everything we need for
-/// actually running the game.
-///
-/// Our game objects are simply a vector for each actor type, and we
-/// probably mingle gameplay-state (like score) and hardware-state
-/// (like `gui_dirty`) a little more than we should, but for something
-/// this small it hardly matters.
-/// **********************************************************************
-
-
-
 impl MainState {
     fn new(ctx: &mut Context) -> MainState {
         ctx.print_resource_stats();
@@ -85,10 +69,8 @@ impl MainState {
         let score_disp = graphics::Text::new(ctx, "score", &assets.font).expect("Failed to make text. Terminating");
         let level_disp = graphics::Text::new(ctx, "level", &assets.font).expect("Failed to make text. Terminating");
 
-        let mut players = Vec::new();
+        let players = Vec::new();
         let rocks = Vec::new();
-
-        players.push(Player::create());
 
         let args: std::vec::Vec<String> = env::args().collect();
         let mut diff_mult = 1.0;
@@ -110,20 +92,29 @@ impl MainState {
             screen_height: ctx.conf.window_mode.height,
             score_display: score_disp,
             level_display: level_disp,
-            start_time: ggez::timer::get_time_since_start(ctx),
+            start_time: std::time::Instant::now(),
             curr_time: 0.0,
             difficulty_mult: diff_mult,
             play_sounds: PlaySounds::default(),
         };
-        
-        s.restart_game(ctx);
-
+       
+        s.add_player();
+        s.restart_game();
         s
     }
 
     fn is_server(&self) -> bool {
         self.local_player_index == 0
     }
+
+    fn add_player(&mut self) -> usize {
+        let mut new_player = Player::create();
+        let index = self.players.len();
+        new_player.index = index as u32;
+        self.players.push(new_player);
+        index
+    }
+
 
     fn fire_player_shot(shots_ref: &mut Vec<Actor>, player: &Player) {
         let player_actor = &player.actor;
@@ -144,7 +135,16 @@ impl MainState {
         self.rocks.retain(|r| !r.kill);
     }
 
-    fn restart_game(&mut self, ctx: &ggez::Context) {
+    fn update_time(&mut self) {
+        let now = std::time::Instant::now();
+        self.curr_time = now.duration_since(self.start_time).as_micros() as f32 / 1000000.0;
+    }
+
+    fn reset_time(&mut self) {
+        self.start_time = std::time::Instant::now();
+    }
+
+    fn restart_game(&mut self) {
         println!("GAME OVER: Time: {:?} | Score: {:?} | On Difficulty: {:?}", self.curr_time, self.score, self.difficulty_mult);
 
         self.local_input = InputState::default();
@@ -152,8 +152,8 @@ impl MainState {
             p.last_shot_at = 0.0;
             p.input = InputState::default();
         }
+        self.reset_time();
         self.score = 0;
-        self.start_time = ggez::timer::get_time_since_start(ctx);
         for shot in &mut self.shots {
             shot.kill = true;
         }
@@ -185,7 +185,7 @@ impl MainState {
             }
         }
         if should_restart {
-            self.restart_game(ctx);
+            self.restart_game();
             self.play_sounds.play_hit = true;
         }
     }
@@ -244,7 +244,7 @@ impl MainState {
         let score_text = graphics::Text::new(ctx, &score_str, &self.assets.font).unwrap();
 
 
-        let level_str = format!("Time: {}", get_level_time(ctx, self));
+        let level_str = format!("Time: {}", self.curr_time);
         let level_text = graphics::Text::new(ctx, &level_str, &self.assets.font).unwrap();
 
         self.score_display = score_text;
@@ -285,9 +285,11 @@ impl MainState {
         }
     }
 
-    fn real_update_server(&mut self, ctx: &mut Context, seconds: f32) -> GameResult<()> {
-        self.players[0].input = self.local_input.clone();
-   
+    fn update_player_inputs(&mut self, seconds: f32) {
+        if self.players.len() > self.local_player_index as usize {
+            self.players[self.local_player_index as usize].input = self.local_input.clone();
+        }
+
         for player in &mut self.players {
             player.tick_input(seconds);
             player.actor.wrap_position(self.screen_width as f32, self.screen_height as f32);
@@ -301,7 +303,10 @@ impl MainState {
                 self.play_sounds.play_shot = true;
             }
         }
+    }
 
+    fn real_update_server(&mut self, ctx: &mut Context, seconds: f32) -> GameResult<()> {
+        self.update_player_inputs(seconds);
         self.tick_physics(seconds);
         self.handle_collisions(ctx);
         self.clear_dead_stuff();
@@ -313,24 +318,7 @@ impl MainState {
 
     /// Perform interpolation & "prediction"
     fn real_update_client(&mut self, ctx: &mut Context, seconds: f32) -> GameResult<()> {
-
-        if self.players.len() > self.local_player_index as usize {
-            self.players[self.local_player_index as usize].input = self.local_input.clone();
-        }
-        
-   
-        for player in &mut self.players {
-            player.tick_input(seconds);
-            player.actor.wrap_position(self.screen_width as f32, self.screen_height as f32);
-        }
-    
-        for player_obj in &mut self.players {
-            let input = &player_obj.input;
-            if input.fire && player_obj.last_shot_at <= self.curr_time - PLAYER_SHOT_TIME {
-                player_obj.last_shot_at = self.curr_time;
-                self.play_sounds.play_shot = true;
-            }
-        }
+        self.update_player_inputs(seconds);
 
         self.tick_physics(seconds);
         self.client_handle_sounds(ctx);
@@ -425,17 +413,6 @@ impl MainState {
     }
 
 }
-/// Utility wrapper for level time.
-fn get_level_time(ctx: &mut Context, state: &MainState) -> f32 {
-    let current = ggez::timer::get_time_since_start(ctx);
-    let duration = current - state.start_time;
-    duration.as_millis() as f32 / 1000.0
-}
-
-
-/// **********************************************************************
-/// A couple of utility functions.
-/// **********************************************************************
 
 fn print_instructions() {
     println!();
@@ -479,9 +456,9 @@ impl EventHandler for StatePtr {
             let seconds = 1.0 / (DESIRED_FPS as f32);
 
             let mut locked_state = self.state.lock().unwrap();          
-
+            
             if locked_state.is_server() {
-                locked_state.curr_time = get_level_time(ctx, &locked_state);
+                locked_state.update_time();
                 locked_state.real_update_server(ctx, seconds)?;
             }
             else {

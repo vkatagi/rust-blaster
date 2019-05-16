@@ -1,7 +1,7 @@
 
 use crate::structs;
 use structs::StatePtr;
-use structs::Player;
+use structs::NetPlayerConnected;
 
 use std::env;
 use std::net::{TcpListener, TcpStream};
@@ -133,17 +133,14 @@ fn client_main(stateptr: &mut StatePtr, server_addres: &mut String) -> std::io::
     net.configure_stream(&mut send_stream);
 
     println!("Client connecting! Transfer rate: {:?}ms", net.transfer_ms);
-
-    
-    stateptr.state.lock().unwrap().local_player_index = 1;
-    
+ 
 
     let ptr = stateptr.get_ref();
     let net_copy = net.clone();
     std::thread::spawn(move || {
         let net = net_copy;
         println!("Recv thread.");
-        let mut timer = Instant::now();    
+        let mut timer = Instant::now();
         loop {
             timer = block_for_next(timer, net.transfer_ms);
 
@@ -157,6 +154,13 @@ fn client_main(stateptr: &mut StatePtr, server_addres: &mut String) -> std::io::
     let ptr = stateptr.get_ref();
     std::thread::spawn(move || {
         let mut timer = Instant::now();    
+        
+        recv_update(&mut send_stream, |x: NetPlayerConnected| {
+            let p_index = x.player_index;
+            ptr.state.lock().unwrap().local_player_index = p_index;
+            println!("Assigned local player id: {}", p_index);
+        });
+
         loop {
             timer = block_for_next(timer, net.transfer_ms);
 
@@ -197,9 +201,10 @@ fn server_recver(mut stream: TcpStream, stateptr: StatePtr, transfer_ms: u64) ->
     let player_index;
     {
         let mut state = stateptr.state.lock().unwrap();
-        state.players.push(Player::create());
-        player_index = state.players.len() - 1;
+        player_index = state.add_player();
     }
+    
+    send_struct(&mut stream, NetPlayerConnected::make(player_index));
 
     let mut timer = Instant::now();    
     loop {
