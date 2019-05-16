@@ -28,12 +28,6 @@ const SHOT_SPEED: f32 = 1100.0;
 use std::time::Duration;
 
 
-/// *********************************************************************
-/// Basic stuff, make some helpers for vector functions.
-/// ggez includes the nalgebra math library to provide lots of
-/// math stuff  We just add some helpers.
-/// **********************************************************************
-
 /// Create a unit vector representing the
 /// given angle (in radians)
 fn vec_from_angle(angle: f32) -> Vector2 {
@@ -96,6 +90,7 @@ impl MainState {
             curr_time: 0.0,
             difficulty_mult: diff_mult,
             play_sounds: PlaySounds::default(),
+            connections: 0,
         };
        
         s.add_player();
@@ -238,7 +233,11 @@ impl MainState {
     }
 
     fn update_ui(&mut self, ctx: &mut Context) {
-        let str = if self.is_server() { "Server" } else { "Client" };
+        let str = if self.is_server() { 
+                format!("Server | Players: {} | Specators: {}", self.players.len(), self.connections + 1 - (self.players.len()  as u32)) 
+            } else { 
+                format!("Client | Player Id: {}", self.local_player_index)
+            };
 
         let score_str = format!("Score: {}  {}", self.score, str);
         let score_text = graphics::Text::new(ctx, &score_str, &self.assets.font).unwrap();
@@ -356,12 +355,6 @@ impl MainState {
         // Play our sound queue
         self.play_sounds();
 
-        // And yield the timeslice
-        // This tells the OS that we're done using the CPU but it should
-        // get back to this program as soon as it can.
-        // This ideally prevents the game from using 100% CPU all the time
-        // even if vsync is off.
-        // The actual behavior can be a little platform-specific.
         Ok(())
     }
 
@@ -478,11 +471,6 @@ impl EventHandler for StatePtr {
         self.state.lock().unwrap().s_key_up_event(_ctx, keycode, _keymod, _repeat)
     }
 }
-
-/// **********************************************************************
-/// Finally our main function!  Which merely sets up a config and calls
-/// `ggez::event::run()` with our `EventHandler` type.
-/// **********************************************************************
 
 pub fn main() {
     let mut cb = ContextBuilder::new("rust-blaster", "katagis")

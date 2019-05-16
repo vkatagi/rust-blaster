@@ -242,6 +242,7 @@ pub struct MainState {
     pub curr_time: f32,
     pub difficulty_mult: f32,
     pub play_sounds: PlaySounds,
+    pub connections: u32,
 }
 
 pub struct StatePtr {

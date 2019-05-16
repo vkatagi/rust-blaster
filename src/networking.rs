@@ -233,24 +233,40 @@ fn server_main(stateptr: &mut StatePtr) -> std::io::Result<()> {
     let mut ptr = stateptr.get_ref();
     let net_copy = net.clone();
 
-    let _ = std::thread::Builder::new().name("server listener sender".into()).spawn(move || {
-        let net = net_copy;
-        for listen_result in send_lstener.incoming() {
-            let this_listen_ref = ptr.get_ref();
-            let mut stream = listen_result.expect("Server Sender Thread Failed.");
-            net.configure_stream(&mut stream);
-            println!("Client Connected: {:?}", stream.peer_addr());
-            server_sender(stream, this_listen_ref, net.transfer_ms);
-        }
-    });
+    let _ = std::thread::Builder::new().name("server listener sender".into())
+        .spawn(move || {
+            
+            let net = net_copy;
+        
+            for listen_result in send_lstener.incoming() {
+                let this_listen_ref = ptr.get_ref();
+                let mut stream = listen_result.expect("Server Sender Thread Failed.");
+                net.configure_stream(&mut stream);
+
+                let transfer_ms = net.transfer_ms;
+                
+                let _ = std::thread::Builder::new().name("server sender".into())
+                    .spawn(move || {
+                        println!("Client Connected: {:?}", stream.peer_addr());
+                        server_sender(stream, this_listen_ref, transfer_ms);
+                    });
+            }
+        });
 
     let mut ptr = stateptr.get_ref();
     let _ = std::thread::Builder::new().name("server listener recver".into()).spawn(move || {
+        
         for listen_result in recv_listener.incoming() {
             let this_listen_ref = ptr.get_ref();
             let mut stream = listen_result.expect("Server Recv Thread Failed.");
             net.configure_stream(&mut stream);
-            server_recver(stream, this_listen_ref, net.transfer_ms).expect("Server Recv Thread Failed.");
+
+            let transfer_ms = net.transfer_ms;
+            let _ = std::thread::Builder::new().name("server sender".into())
+                .spawn(move || {
+                    this_listen_ref.state.lock().unwrap().connections += 1;
+                    server_recver(stream, this_listen_ref, transfer_ms).expect("Server Recv Thread Failed.");
+                });
         }
     });  
 
