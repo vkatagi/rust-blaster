@@ -42,6 +42,7 @@ impl NetClientInput {
     
     // normally you would want to ensure the data a client sends is valid.
     // For the purposes of this project and due to the game being co-op we suppose we can trust the client to not cheat.
+    #[allow(unused_mut)]
     pub fn update_main_state(mut self, player_id: usize, state: &mut MainState) {
         if self.shots_made.len() > 0 {
             state.play_sounds.play_shot = true;
