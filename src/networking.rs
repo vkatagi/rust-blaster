@@ -166,8 +166,8 @@ fn client_sender_thread(ptr: StatePtr, mut send_stream: TcpStream, net: NetSetup
 
         let net_data: NetClientInput;
         {
-            let state = ptr.state.lock().unwrap();
-            net_data = NetClientInput::make_from_state(&state);
+            let mut state = ptr.state.lock().unwrap();
+            net_data = NetClientInput::make_from_state(&mut state);
         }
 
         send_struct(&mut send_stream, net_data);

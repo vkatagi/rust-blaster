@@ -93,11 +93,24 @@ impl MainState {
             difficulty_mult: diff_mult,
             play_sounds: PlaySounds::default(),
             connections: 0,
+            local_shots_made: Vec::new(),
         };
        
         s.add_player();
         s.restart_game();
         s
+    }
+
+    fn get_local_player(&self) -> Option<&Player> {
+        if let Some(index) = self.local_player_index {
+            if self.players.len() > index {
+                Some(&self.players[index])
+            } else {
+                None
+            }
+        } else {
+            None
+        }
     }
 
     fn is_server(&self) -> bool {
@@ -112,19 +125,19 @@ impl MainState {
         index
     }
 
-
-    fn fire_player_shot(shots_ref: &mut Vec<Actor>, player: &Player) {
-        let player_actor = &player.actor;
+    fn spawn_shots(shots_ref: &mut Vec<Actor>, pos: &Vector2) {
         for i in -1..2 {
             let mut shot = Actor::create_shot();
-            shot.pos = player_actor.pos;
-            shot.facing = player_actor.facing;
-            let direction = vec_from_angle(shot.facing);
+            shot.pos = pos.clone();
 
-            shot.velocity.x = SHOT_SPEED * direction.x + (i as f32) * SHOT_SPEED / 3.0;
-            shot.velocity.y = SHOT_SPEED * direction.y;
+            shot.velocity.x = (i as f32) * SHOT_SPEED / 3.0;
+            shot.velocity.y = SHOT_SPEED;
             shots_ref.push(shot);
         }
+    }
+
+    fn fire_player_shot(shots_ref: &mut Vec<Actor>, player: &Player) {
+        MainState::spawn_shots(shots_ref, &player.actor.pos);
     }
 
     fn clear_dead_stuff(&mut self) {
@@ -283,6 +296,10 @@ impl MainState {
             }
         }
 
+        for shot in &mut self.local_shots_made {
+            shot.tick_physics(seconds);
+        }
+
         // Tick rocks
         for rock in &mut self.rocks {
             rock.tick_physics(seconds);
@@ -305,11 +322,33 @@ impl MainState {
             player.actor.wrap_position(self.screen_width as f32, self.screen_height as f32);
         }
     
-        for player_obj in &mut self.players {
-            let input = &player_obj.input;
-            if input.fire && player_obj.last_shot_at <= self.curr_time - PLAYER_SHOT_TIME {
-                player_obj.last_shot_at = self.curr_time;
-                MainState::fire_player_shot(&mut self.shots, player_obj);
+        for player in &mut self.players {
+
+            if player.input.fire && player.last_shot_at <= self.curr_time - PLAYER_SHOT_TIME {
+                player.last_shot_at = self.curr_time;
+
+                match self.local_player_index {
+                    Some(0) => {
+                        if player.index == 0 {
+                            MainState::fire_player_shot(&mut self.shots, player);
+                        }
+                    }
+                    None => {
+                        MainState::fire_player_shot(&mut self.shots, player);
+                    }
+                    Some(x) => {
+                        if x == player.index as usize {
+                            let mut new_shots = Vec::new();
+                            MainState::fire_player_shot(&mut new_shots, player);
+                            self.local_shots_made.append(&mut new_shots.clone());
+                            self.shots.append(&mut new_shots);
+                        }
+                        else {
+                            MainState::fire_player_shot(&mut self.shots, player);
+                        }
+                    }
+                }
+                
                 self.play_sounds.play_shot = true;
             }
         }

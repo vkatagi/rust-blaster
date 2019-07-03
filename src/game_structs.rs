@@ -135,6 +135,7 @@ pub struct MainState {
     pub difficulty_mult: f32,
     pub play_sounds: PlaySounds,
     pub connections: u32,
+    pub local_shots_made: Vec<Actor>,
 }
 
 pub struct StatePtr {

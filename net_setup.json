@@ -1,0 +1,7 @@
+{
+  "transfer_ms": 16,
+  "timeout_ms": 1000,
+  "packet_ttl": 60,
+  "non_blocking": false,
+  "nodelay": true
+}

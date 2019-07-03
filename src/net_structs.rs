@@ -1,7 +1,7 @@
 use crate::actor;
 use crate::game_structs;
-use actor::{Actor};
-
+use actor::{Actor, Vec2Serial};
+use ggez::nalgebra::Vector2;
 use game_structs::{MainState, InputState, Player};
 
 
@@ -23,21 +23,60 @@ impl NetPlayerConnected {
     }
 }
 
+/// The struct that is transfered from the client to the server.
+/// 
+/// Just sending input state works ok only for very low latency and transfer rates.
+/// 
+/// 
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct NetClientInput {
     pub input_state: InputState,
+    pub final_position: Vec2Serial,
+    pub shots_made: Vec<Actor>,
 }
 
 impl NetClientInput {
-    pub fn update_main_state(self, player_id: usize, state: &mut MainState) {
+
+    /// Runs on server with the data "self" sent from the client with id "player_id"
+    
+    // normally you would want to ensure the data a client sends is valid.
+    // For the purposes of this project and due to the game being co-op we suppose we can trust the client to not cheat.
+    pub fn update_main_state(mut self, player_id: usize, state: &mut MainState) {
+        if self.shots_made.len() > 0 {
+            state.play_sounds.play_shot = true;
+        }
+
+        for mut shot in self.shots_made {
+            shot.post_deserialize();
+            state.shots.push(shot);
+        }
         state.players[player_id].input = self.input_state;
+
+        
+        state.players[player_id].actor.pos = Vector2::new(self.final_position.x, self.final_position.y);
     }
     
-    pub fn make_from_state(state: &MainState) -> NetClientInput {
-        NetClientInput {
-            input_state: state.local_input.clone(),
+    /// Runs on client to prepare the struct for sending.
+    pub fn make_from_state(state: &mut MainState) -> NetClientInput {
+        let player = state.get_local_player().unwrap_or(&state.players[0]);
+    
+        let mut shots_made = Vec::with_capacity(state.local_shots_made.len());
+
+        for shot in &state.local_shots_made {
+            let mut shot = shot.clone();
+            shot.pre_serialize();
+            shots_made.push(shot);
         }
+        
+        let r = NetClientInput {
+            input_state: state.local_input.clone(),
+            final_position: Vec2Serial::from_vec(&player.actor.pos),
+            shots_made: shots_made,
+        };
+
+        state.local_shots_made.clear();
+        r
     }
 }
 
@@ -106,16 +145,16 @@ impl NetFromServer {
 
         for i in (0..remote_list.len()).rev() {
             if state.local_player_index == Some(i) {
-                let remote = remote_list.pop().unwrap();
-                state.players[i].actor = remote.actor;
-                state.players[i].actor.post_deserialize();
-                state.players[i].last_shot_at -= time_diff;
+                let _ = remote_list.pop().unwrap();
+                //state.players[i].actor = remote.actor;
+                //state.players[i].actor.post_deserialize();
+                //state.players[i].last_shot_at -= time_diff;
 
             } else {
                 state.players[i] = remote_list.pop().unwrap();
                 state.players[i].actor.post_deserialize();
-                state.players[i].last_shot_at -= time_diff;
             }
+            state.players[i].last_shot_at -= time_diff;
         }
 
 

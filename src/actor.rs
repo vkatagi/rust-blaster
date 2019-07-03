@@ -25,10 +25,17 @@ pub struct Vec2Serial {
 }
 
 impl Vec2Serial {
-    fn from_floats(x: f32, y: f32) -> Vec2Serial {
+    pub fn from_floats(x: f32, y: f32) -> Vec2Serial {
         Vec2Serial {
             x,
             y,
+        }
+    }
+
+    pub fn from_vec(v: &Vector2) -> Vec2Serial {
+        Vec2Serial {
+            x: v.x,
+            y: v.y,
         }
     }
 }
