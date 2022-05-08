@@ -37,3 +37,6 @@ For spectator run with 's' as first parameter and then ip / server.
  * To connect over the internet you need to port-forward ports 9942 and 9949.
  * You can change the difficulty of the server by providing a difficulty multiplier as first argument. eg: `cargo run --release 2.5`
  * There is currently no way to cleanly leave the session.
+
+
+![screenshot](./rust-blaster.jpg "rust-blaster gameplay")
